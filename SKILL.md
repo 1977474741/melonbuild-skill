@@ -25,7 +25,7 @@ description: 把 Figma 设计稿变成可直接合进项目的生产级代码：
 - CLI：`melonbuild --version`；没装就 `npm i -g melonbuild-cli`。
 - 登录：`melonbuild whoami --json`。退出码 2 表示未登录，请用户自己运行 `melonbuild login`（要在浏览器里确认），不要替用户操作。
 - 读项目，最多 5 次读取：`package.json`、样式方案（Tailwind / CSS Modules / styled / Less…）、组件库、已有的 token 或主题文件、组件和资源目录约定。
-- 空目录：先搭好项目骨架，默认 Vite + React + TypeScript + CSS Modules，再取数，因为图片要直接下载进项目的资源目录。
+- 空目录：先搭好项目骨架，默认 Vite + React + TypeScript + CSS Modules。安装依赖放到后台，和取数、规划同时进行，不要干等。
 
 ### 2. 取数（先只拿结构）
 
@@ -41,37 +41,42 @@ melonbuild node-ast "<Figma链接>" --reuse components -q -o .melonbuild/<模块
 - 退出码：3 表示额度或体积超限，告诉用户原因和订阅链接；429 限流时把 CLI 给出的原因原样转告用户。
 - 建议把 `.melonbuild/` 加进 `.gitignore`。
 
-### 3. 鸟瞰与规划
+### 3. 规划（只用 outline 和 tokens，先不 show）
 
 ```bash
-node MB outline .melonbuild/x.json    # 单元、状态分组、组件排行、连线、设计师注释
-node MB tokens  .melonbuild/x.json    # 颜色 / 字体 / 圆角 / 间距 / 阴影的使用频次
+node MB outline .melonbuild/<模块名>.remote.json   # 分区、状态组与基准帧、同名组件、宿主外观、组件排行、连线、注释
+node MB tokens  .melonbuild/<模块名>.remote.json   # 颜色 / 字体 / 圆角 / 间距 / 阴影，开头会提示倍率
 ```
 
-在回复里用几行写出规划，然后直接开工，不用等确认（大范围的歧义除外）：
+outline 已经替你做好了这些判断，**直接照用，不要再自己推断**：
 
-- **页面与路由**：每组 `≈gN` 是**同一个界面的不同状态**，只实现一次。
-- **状态**：每组状态由什么驱动（见下文「状态合并」）。
-- **组件**：按 outline 的组件排行，给 `Cn` 起语义化名称；`same skeleton` 提示的几个模板合并成一个组件加 variant；能用项目已有组件或组件库的直接用。
-- **token**：用到两次及以上的值进 token，只出现一次的直接写字面值。
-- **尺寸策略**：移动端 2x/3x 稿要换算倍率；整页绝对定位的稿子，页面和列表这一级要改成文档流（见 fidelity.md 的「生产化调整」）。
-- **画板识别**：屏幕大小的 SECTION 就是一屏（outline 已按屏列出）。帧名常常就是状态名（如「约会-上拉加载失败」），outline 会把同前缀的帧归成一组。`titles:` 是画布上的分区标题，`notes (requirements):` 才是设计师写的需求注释。
-- **实现范围**：
-  - 只实现链接指向的设计。整页链接里如果有多套方案（不同尺寸的卡片流、另一版页面），以分区标题下面成组的那套为准，其余的在汇报里列出，不要都做。
-  - 规则说明帧（如「8个字以上 小字号」「4个字以内 大字号」）是逻辑规格，落成代码里的规则，不是独立组件。
-  - 宿主环境的外观（手机状态栏 9:41、微信胶囊、浏览器地址栏、Home Indicator）不属于页面，不写进页面组件；需要展示时放在预览外壳里。
+| outline 里的 | 意思 | 怎么用 |
+|---|---|---|
+| `REGION <名称>` / `[<行标题>]` | 画布上的分区（大背景圈出的范围）和其中的一排屏幕 | 只实现正式分区里的屏幕 |
+| `REGION ⚠ 不在任何分区里` | 旧稿、备选方案、附件 | 默认不实现，在汇报里列出 |
+| `state groups` 的 `base=` | 同一界面的不同状态，以及写代码时的基准帧 | 先 show 基准帧，再处理其它帧 |
+| `diff 对比:` / `单独 show:` | 和基准结构相近 / 差异大 | 前者 `diff <base> <id>`，后者单独 `show` |
+| `same name, drawn differently` | 同一个组件被画成了好几版 | 以 `base=` 那版为准；其它版用 `diff <base> <other>` 看差异，决定做成 variant 还是忽略 |
+| `host chrome` | 状态栏、小程序胶囊等运行环境外观 | 不写进页面组件（需要时放在预览外壳里） |
+| `notes (requirements)` | 设计师写的需求注释 | 当作需求实现 |
+| `small parts` 里的规则说明帧（如「8个字以上 小字号」） | 逻辑规格 | 落成代码里的规则，不是独立组件 |
 
-**下载图片**：范围定了再下，只下要实现的那些屏。
+在回复里用几行写出规划（页面与路由、每组状态由什么驱动、组件清单与命名、token、尺寸策略），然后直接开工，不用等确认。
+
+- **组件**：按 outline 的组件排行给 `Cn` 起语义化名称；`same skeleton` 里的几个模板合并成一个组件加 variant；能用项目已有组件或组件库的直接用。
+- **token**：用到两次及以上的值进 token，只出现一次的直接写字面值；按 tokens 开头的提示换算倍率。
+- **尺寸策略**：整页绝对定位的稿子，页面和列表这一级改成文档流（见 fidelity.md 的「生产化调整」）。
+
+**下载图片**：范围一定就下，之后所有 `show` / `diff` 都在本地 AST 上做，图片显示为文件名，可以直接 import。
 
 ```bash
-node MB subset .melonbuild/<模块名>.remote.json <单元id…> -o .melonbuild/<模块名>.scope.json  # 整份都要实现时跳过这步，直接用 remote.json
+node MB subset .melonbuild/<模块名>.remote.json <要实现的单元id…> -o .melonbuild/<模块名>.scope.json
 melonbuild download-images .melonbuild/<模块名>.scope.json -q \
   --image-dir <项目资源目录>/<模块名> --output .melonbuild/<模块名>.json
-node MB assets .melonbuild/<模块名>.json      # 标出可以改用 CSS 的纯色形状
+node MB assets .melonbuild/<模块名>.json      # 列出可以改用 CSS 画的纯色 / 渐变形状
 ```
 
-- 之后所有 `MB` 查询都用 `.melonbuild/<模块名>.json`（图片已改成本地路径）。
-- 图片按 Figma 图层命名，内容相同的只存一份，Figma 导出的不完整 SVG 已修好。AST 里的路径**相对 AST 文件**，写 import 时换成相对组件文件的路径或项目别名（如 `@/assets/dating/icon-定位-3637b8db.svg`）。
+- 图片按 Figma 图层命名，内容相同的只存一份。`show` 只显示文件名，文件都在 `--image-dir` 目录里；写 import 时用项目别名或相对组件文件的路径（如 `@/assets/dating/icon-定位-3637b8db.svg`）。
 - 退出码 4 表示部分图片失败，按提示重跑 `download-images` 补下载，不会重新生成。
 
 ### 4. 实现（自底向上）

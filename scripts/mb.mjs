@@ -34,6 +34,9 @@ const isRef=n=>n&&typeof n.t==='string';
 const kids=n=>Array.isArray(n?.children)?n.children:[];
 const STYLE_ATTRS=['layout','fills','fontStyle','strokes','effects'];
 const short=(s,n)=>{s=String(s).replace(/\s+/g,' ');return s.length>n?s.slice(0,n-1)+'…':s;};
+// 图片链接只显示短标识：远程签名 URL 取图片 id 前 8 位，本地路径取文件名
+const shortImage=v=>v.replace(/https:\/\/[^\s"')]*?\/images\/([0-9a-f-]{8})[^\s"')]*/g,'img:$1').replace(/(?:\.{0,2}\/)?(?:[^\s"'(),]*\/)+([^\/\s"'(),]+\.(?:svg|png|jpe?g|webp|gif))/g,'$1');
+const shortJSON=v=>shortImage(JSON.stringify(v));
 const val=v=>{
   if(v&&typeof v==='object'){
     if(typeof v.$param==='string')return '{'+v.$param+'}';
@@ -41,7 +44,7 @@ const val=v=>{
     return JSON.stringify(v);
   }
   if(typeof v==='string'){
-    if(/[\\/]/.test(v)&&/\.(svg|png|jpe?g|webp|gif)$/i.test(v))v=basename(v);
+    v=shortImage(v);
     return /^[^\s"=]+$/.test(v)?v:JSON.stringify(v);
   }
   return String(v);
@@ -105,29 +108,30 @@ function show(targets,maxDepth,expand){
   const note=v=>{if(typeof v==='string'&&v in G)usedStyles.add(v);};
   for(const {spec,root} of targets){
     const lines=[];
-    (function rec(n,d,path,env){
+    // extra：展开模板多出来的缩进层数，不占 --depth 的预算
+    (function rec(n,d,path,env,extra=0){
       const pad='  '.repeat(d);
       if(isRef(n)&&/^T\d/.test(n.t)&&!kids(n).length&&T[n.t]?.body&&!T[n.t].params){
         // tiny compression templates: inline them instead of making the reader look them up
-        return rec({...T[n.t].body,...(n.id!==undefined?{id:n.id}:{})},d,path,env);
+        return rec({...T[n.t].body,...(n.id!==undefined?{id:n.id}:{})},d,path,env,extra);
       }
       if(isRef(n)){
         const args=Object.entries(n.args||{}).map(([k,v])=>{v=bind(v,env);note(v);return k+'='+(v===null||v===undefined?'∅':val(v));}).join(' ');
-        if(expand&&T[n.t]?.body&&!/^S/.test(n.t)&&d<maxDepth){
+        if(expand&&T[n.t]?.body&&!/^S/.test(n.t)&&d-extra<maxDepth){
           lines.push(pad+'<'+n.t+(n.id!==undefined?' #'+n.id:'')+(args?' '+args:'')+'> expanded  ['+path+']');
           const inner=envOf(n,env);
           for(const v of Object.values(inner))note(v);
           // slot contents are placed where <slotN/> sits in the body
           const slots=Object.fromEntries(kids(n).map(s=>[s.tag,kids(s)]));
-          return rec({...T[n.t].body,__slots:slots},d+1,path,inner);
+          return rec({...T[n.t].body,__slots:slots},d+1,path,inner,extra+1);
         }
         usedTemplates.add(n.t);
         lines.push(pad+'<'+n.t+(n.id!==undefined?' #'+n.id:'')+(args?' '+args:'')+(kids(n).length?'>':' />')+'  ['+path+']');
-        if(kids(n).length&&d<maxDepth)kids(n).forEach((c,i)=>rec(c,d+1,path+'/'+i,env));
+        if(kids(n).length&&d-extra<maxDepth)kids(n).forEach((c,i)=>rec(c,d+1,path+'/'+i,env,extra));
         return;
       }
       if(/^slot\d+$/.test(n.tag||'')&&!kids(n).length&&env&&env.__slots?.[n.tag]){
-        lines.push(pad+'<'+n.tag+'> (filled)');env.__slots[n.tag].forEach((c,i)=>rec(c,d+1,path+'/'+i,env));return;
+        lines.push(pad+'<'+n.tag+'> (filled)');env.__slots[n.tag].forEach((c,i)=>rec(c,d+1,path+'/'+i,env,extra));return;
       }
       if(n.__slots)env={...env,__slots:n.__slots};
       for(const k of Object.keys(n))note(bind(n[k],env));
@@ -138,15 +142,15 @@ function show(targets,maxDepth,expand){
       lines.push(pad+head+(a?' '+a:'')+text);
       const c=kids(n);
       if(!c.length)return;
-      if(d>=maxDepth){lines.push(pad+'  … '+c.length+' children / '+c.reduce((s,x)=>s+count(x),0)+' nodes  → show '+path+' ');return;}
-      c.forEach((x,i)=>rec(x,d+1,path+'/'+i,env));
+      if(d-extra>=maxDepth){lines.push(pad+'  … '+c.length+' children / '+c.reduce((s,x)=>s+count(x),0)+' nodes  → show '+path+' ');return;}
+      c.forEach((x,i)=>rec(x,d+1,path+'/'+i,env,extra));
     })(root,0,spec,{});
     // template header when showing a template
     if(root.__template){
       const t=T[root.__template];
       const meta=['uses='+(t.uses??'?'),'nodes='+expandedSize(root.__template)];
-      if(t.params)meta.push('params '+JSON.stringify(t.params));
-      if(t.variants)meta.push('variants '+JSON.stringify(t.variants));
+      if(t.params)meta.push('params '+shortJSON(t.params));
+      if(t.variants)meta.push('variants '+shortJSON(t.variants));
       for(const v of [...Object.values(t.params||{}),...Object.values(t.variants||{}).flatMap(Object.values)])note(v);
       lines.unshift('template '+root.__template+' '+meta.join(' '));
     }
@@ -161,7 +165,7 @@ function show(targets,maxDepth,expand){
   }
   if(usedStyles.size){
     console.log('\nstyles:');
-    for(const k of [...usedStyles].sort())console.log(k+' '+JSON.stringify(style(k)));
+    for(const k of [...usedStyles].sort())console.log(k+' '+shortJSON(style(k)));
   }
 }
 
@@ -234,6 +238,55 @@ function label(n){
 }
 function skeleton(n){if(!n)return '';if(isRef(n))return n.t;return (n.tag||'')+'('+kids(n).map(skeleton).join(',')+')';}
 
+
+// ---------- canvas regions ----------
+// 画板上常见的组织方式：大块背景圈出一个分区，分区里的大标题是分区名，小标题领着一排屏幕。
+// 背景外面的屏幕通常是旧稿、备选方案或附件。
+const xy=n=>{const p=n?.canvasXY;return p&&typeof p.x==='number'?p:null;};
+function canvasRegions(board,screens){
+  const kids=kids0(board);
+  const area=n=>{const d=dim(n);return (d.width||0)*(d.height||0);};
+  const screenArea=Math.max(...screens.map(area).filter(Boolean),1);
+  const box=n=>{const p=xy(n),d=dim(n);return p&&d.width&&d.height?{x:p.x,y:p.y,w:d.width,h:d.height}:null;};
+  const inside=(p,b)=>p&&p.x>=b.x&&p.x<b.x+b.w&&p.y>=b.y&&p.y<b.y+b.h;
+  const backs=kids.filter(n=>!isRef(n)&&!kids0(n).length&&n.tag!=='TEXT'&&area(n)>=screenArea*4).map(box).filter(Boolean)
+    .filter(b=>screens.filter(u=>inside(xy(u),b)).length>=2);
+  const titles=kids.filter(n=>!isRef(n)&&n.tag==='TEXT'&&xy(n)).map(n=>({text:String(n.text??n.name??''),...xy(n),size:dim(n).height||0}));
+  if(!backs.length&&!titles.length)return null;
+  return u=>{
+    const p=xy(u);if(!p)return {region:null,row:null};
+    const back=backs.filter(b=>inside(p,b)).sort((a,b)=>a.w*a.h-b.w*b.h)[0];
+    if(backs.length&&!back)return {region:'⚠ 不在任何分区里（多半是旧稿/备选方案/附件，默认不实现）',row:null};
+    const own=titles.filter(t=>!back||inside(t,back));
+    const head=[...own].sort((a,b)=>b.size-a.size||a.y-b.y)[0];
+    const above=own.filter(t=>t!==head&&t.y<=p.y).sort((a,b)=>b.y-a.y||Math.abs(a.x-p.x)-Math.abs(b.x-p.x))[0];
+    return {region:head?.text??(back?'(未命名分区)':null),row:above?.text??null};
+  };
+}
+const kids0=n=>Array.isArray(n?.children)?n.children:[];
+
+// 宿主外观：手机状态栏、小程序胶囊、浏览器栏、Home Indicator……属于运行环境，不属于页面
+const HOST=/状态栏|status ?bar|home ?indicator|胶囊|小程序|capsule|safari|toolbar|刘海|notch|navigation bar\/system|system\/|^9:41/i;
+function hostChrome(){
+  const out=new Map();
+  for(const [k,t] of Object.entries(T)){
+    const nm=String(t.body?.name??''),tx=texts(t.body);
+    // 名字点明是系统外观，或者全部文案都是时间、电量、运营商这类状态栏内容（含页面标题的导航栏不算）
+    const statusOnly=tx.length>0&&tx.every(x=>/^\d{1,2}:\d{2}( ?[AP]M)?$|^\d{1,3}%$|^(sketch|carrier|中国移动|中国联通|中国电信|5G|4G|LTE|wi-?fi)$/i.test(x.trim()));
+    if(HOST.test(nm)||statusOnly)out.set(k,nm||label(t.body));
+  }
+  return out;
+}
+
+// 同一状态组里选基准帧：与组内其它帧平均最相似的那个；结构差太多的单独看
+function baseOf(members){
+  const bags=members.map(u=>bag(flatRef(u)));
+  const sim=(i,j)=>jaccard(bags[i],bags[j]);
+  let best=0,bestScore=-1;
+  members.forEach((_,i)=>{const sc=members.reduce((t,_,j)=>t+(i===j?0:sim(i,j)),0)/Math.max(1,members.length-1);if(sc>bestScore){best=i;bestScore=sc;}});
+  return {base:members[best],scores:members.map((_,i)=>i===best?1:sim(best,i))};
+}
+
 function outline(){
   const section=opt('--section');
   const bytes=statSync(file).size;
@@ -264,22 +317,58 @@ function outline(){
   const line=u=>{const d=dim(u);
     const tx=[...new Set(texts(u))].filter(t=>(df.get(t)||0)<common).slice(0,5).map(s=>short(s,20)).join(' | ');
     return `${gOf.has(u)?'≈g'+gOf.get(u)+' ':''}${A(u)} ${isRef(u)?'<'+u.t+'> ':''}"${short(label(u),30)}" ${wh(d)} n=${count(u)}${tx?'  '+tx:''}${nearOf.get(u)?'  ~'+A(nearOf.get(u)):''}`;};
-  console.log('\nunits (n=nodes; ≈gN = same screen/part in different states → build once, use diff; ~id = partly similar):');
-  for(const [gid,{group,list}] of byGroup){
-    console.log(group?`SECTION ${A(group)} "${short(group.name||'',50)}" ${list.length} units`:'(root)');
+  const board=ast.nodes.length===1&&!isRef(ast.nodes[0])&&['SECTION','CANVAS'].includes(ast.nodes[0].tag)?ast.nodes[0]:null;
+  const where=board?canvasRegions(board,allScreens):null;
+  const host=hostChrome();
+  console.log('\nunits (n=nodes; ≈gN = same screen in different states, build once; ~id = partly similar):');
+  const printList=(list,pad)=>{
     const notes=list.filter(isNote);
     const screens=list.filter(u=>allScreens.includes(u)),small=list.filter(u=>!isNote(u)&&!allScreens.includes(u));
-    for(const u of screens)console.log('  '+line(u));
-    if(all)for(const u of small)console.log('  · '+line(u));
+    for(const u of screens)console.log(pad+line(u));
+    if(all)for(const u of small)console.log(pad+'· '+line(u));
     if(small.length&&!all){const by=new Map();for(const u of small){const k=short(label(u),24);by.set(k,(by.get(k)||0)+1);}
-      console.log('  small parts ('+small.length+'): '+[...by].map(([k,c])=>k+(c>1?'×'+c:'')).join(', ')+'  (--all to list)');}
-    // short canvas texts are board titles; longer ones are designer annotations (requirements)
+      console.log(pad+'small parts ('+small.length+'): '+[...by].map(([k,c])=>k+(c>1?'×'+c:'')).join(', ')+'  (--all to list)');}
     const txt=n=>String(n.text??n.name??'');
-    const titles=notes.filter(n=>txt(n).length<=10&&!/[，。,.:：；;!?！？]/.test(txt(n))),ann=notes.filter(n=>!titles.includes(n));
+    const ann=notes.filter(n=>!(txt(n).length<=10&&!/[，。,.:：；;!?！？]/.test(txt(n))));
+    if(ann.length)console.log(pad+'notes (requirements): '+ann.map(n=>'"'+short(txt(n),all?400:90)+'"').join(' ; '));
+  };
+  if(where){
+    // 按画布分区与行标题组织：设计师就是这样告诉你「哪些是同一页、哪套是正式稿」的
+    const groups=new Map();
+    for(const u of kids0(board)){const {region,row}=where(u);const k=region??'(未归入分区)';if(!groups.has(k))groups.set(k,new Map());
+      const rows=groups.get(k);const r=row??'';if(!rows.has(r))rows.set(r,[]);rows.get(r).push(u);}
+    const order=[...groups.keys()].sort((a,b)=>(a.startsWith('⚠')?1:0)-(b.startsWith('⚠')?1:0));
+    for(const k of order){console.log('REGION '+k);for(const [row,list] of groups.get(k)){if(row)console.log('  ['+row+']');printList(list.filter(u=>!(isNote(u)&&String(u.text??'').length<=10)),row?'    ':'  ');}}
+    for(const [gid,{group,list}] of byGroup)if(group&&group!==board){console.log(`SECTION ${A(group)} "${short(group.name||'',50)}" ${list.length} units`);printList(list,'  ');}
+  }else for(const [gid,{group,list}] of byGroup){
+    console.log(group?`SECTION ${A(group)} "${short(group.name||'',50)}" ${list.length} units`:'(root)');
+    printList(list,'  ');
+    const txt=n=>String(n.text??n.name??'');
+    const titles=list.filter(isNote).filter(n=>txt(n).length<=10&&!/[，。,.:：；;!?！？]/.test(txt(n)));
     if(titles.length)console.log('  titles: '+titles.map(n=>'"'+txt(n)+'"').join(' ; '));
-    if(ann.length)console.log('  notes (requirements): '+ann.map(n=>'"'+short(txt(n),all?400:90)+'"').join(' ; '));
   }
-  if(summary.length)console.log('\nstate groups:\n  '+summary.join('\n  '));
+  if(gi){
+    console.log('\nstate groups (base = 写组件时作为基准的帧；其它帧用 diff 对比基准，similarity<0.3 的结构差异大，单独 show):');
+    let g=0;
+    for(const idxs of groups)if(idxs.length>1){g++;
+      const members=idxs.map(i=>allScreens[i]);const {base,scores}=baseOf(members);
+      const stray=u=>where&&where(u).region?.startsWith('⚠')?' ⚠分区外':'';
+      console.log(`  g${g} base=${A(base)} "${short(label(base),24)}"${stray(base)}`);
+      const others=members.filter(u=>u!==base).sort((a,b)=>scores[members.indexOf(b)]-scores[members.indexOf(a)]);
+      const fmt=u=>`${A(u)} "${short(label(u),16)}" ${scores[members.indexOf(u)].toFixed(2)}${stray(u)}`;
+      const near=others.filter(u=>scores[members.indexOf(u)]>=0.3),far=others.filter(u=>scores[members.indexOf(u)]<0.3);
+      if(near.length)console.log('     diff 对比: '+near.map(fmt).join(' ; '));
+      if(far.length)console.log('     单独 show: '+far.map(fmt).join(' ; '));
+    }
+  }
+  // 不是模板的宿主外观图层（小程序胶囊、Home Indicator……），按名字列出
+  const hostNodes=new Map();
+  const scan=n=>{if(!n||typeof n!=='object')return;if(isRef(n)){kids0(n).forEach(scan);return;}
+    if(n.name&&HOST.test(n.name))hostNodes.set(n.name,(hostNodes.get(n.name)||0)+1);else kids0(n).forEach(scan);};
+  ast.nodes.forEach(scan);for(const [k,t] of Object.entries(T))if(!host.has(k))scan(t.body);
+  if(host.size||hostNodes.size)console.log('\nhost chrome (运行环境的外观，不写进页面组件；check 会忽略模板里的文案): '+
+    [...[...host].map(([k,n])=>`${k} "${short(n,24)}"`),...[...hostNodes].map(([n,c])=>`"${short(n,24)}"${c>1?'×'+c:''}`)].join(', '));
+
   // components: rank by uses × size, the reuse value
   const comps=Object.entries(T).filter(([k])=>!/^T\d/.test(k)).map(([k,t])=>({k,t,n:expandedSize(k)}));
   comps.sort((a,b)=>(b.t.uses||1)*b.n-(a.t.uses||1)*a.n);
@@ -296,11 +385,24 @@ function outline(){
     for(const {k,t} of comps){const s=skeleton(t.body);if(s.length<12)continue;if(!sk.has(s))sk.set(s,[]);sk.get(s).push(k);}
     const merges=[...sk.values()].filter(v=>v.length>1);
     if(merges.length)console.log('\nsame skeleton, different values (likely one component with props/variants):\n  '+merges.map(v=>v.join('≈')).join('  '));
+    // 同名但结构不同的模板：同一个组件被画了好几版。以使用最多的为准，其余用 diff 看差异再决定做成变体还是忽略
+    const byName=new Map();
+    for(const {k,t,n} of comps){const nm=String(t.body?.name??'');if(!nm||AUTO.test(nm)||n<8||host.has(k))continue;if(!byName.has(nm))byName.set(nm,[]);byName.get(nm).push({k,uses:t.uses??1});}
+    const variants=[...byName].filter(([,v])=>v.length>1);
+    if(variants.length){
+      console.log('\nsame name, drawn differently (one component; base = most used; diff <base> <other> to see what differs):');
+      for(const [nm,v] of variants){v.sort((a,b)=>b.uses-a.uses);console.log(`  "${short(nm,20)}": base=${v[0].k}×${v[0].uses}  others: ${v.slice(1).map(x=>x.k+'×'+x.uses).join(' ')}`);}
+    }
   }
 }
 
 // ---------- tokens ----------
 function tokens(){
+  // 数值都是设计稿像素：按屏宽提示倍率，免得把 2x 的值直接写进 CSS
+  const widths=units().filter(e=>e.unit&&!isRef(e.unit)&&e.unit.tag!=='TEXT').map(e=>dim(e.unit).width).filter(w=>typeof w==='number'&&w>=320&&w<=1300);
+  const mode=[...widths.reduce((m,w)=>m.set(w,(m.get(w)||0)+1),new Map())].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  if(mode){const scale=mode>=1100?3:mode>=700?2:1;
+    console.log(scale>1?`note: 屏宽多为 ${mode}，是 ${scale}x 稿：下面的数值都要 ÷${scale} 再写成 CSS（同一文件里 375/390/414 宽的帧是 1x，单独判断）`:`note: 屏宽多为 ${mode}，1x 稿，数值直接用`);}
   const refs=new Map();
   const src=JSON.stringify({n:ast.nodes,t:T});
   for(const m of src.matchAll(/"([A-Za-z]+_?[A-Za-z0-9]+)"/g))if(m[1] in G)refs.set(m[1],(refs.get(m[1])||0)+1);
@@ -357,7 +459,7 @@ function diff(aSpec,bSpec){
   console.log(`diff ${aSpec} → ${bSpec}: ${out.length} changes (B has ${total} nodes; paths are B-side)`);
   console.log(out.join('\n'));
   const st=new Set();for(const l of out)for(const m of l.matchAll(/(?:→|:)\s*([A-Za-z]+_?[A-Za-z0-9]+)\b/g))if(m[1] in G)st.add(m[1]);
-  if(st.size){console.log('\nstyles:');for(const k of [...st].sort())console.log(k+' '+JSON.stringify(style(k)));}
+  if(st.size){console.log('\nstyles:');for(const k of [...st].sort())console.log(k+' '+shortJSON(style(k)));}
 }
 
 // ---------- check ----------
@@ -366,7 +468,9 @@ function check(dirs){
   const roots=units.length?units.map(locate):ast.nodes;
   // templates reachable from the chosen roots
   const used=new Set();const visit=n=>{if(!n)return;if(isRef(n)&&!used.has(n.t)){used.add(n.t);visit(T[n.t]?.body);}kids(n).forEach(visit);};roots.forEach(visit);
-  const allTexts=new Set(texts({children:roots,tag:'ROOT'}));
+  const host=hostChrome();
+  const hostTexts=new Set([...host.keys()].flatMap(k=>texts(T[k].body)));
+  const allTexts=new Set(texts({children:roots,tag:'ROOT'}).filter(t=>!hostTexts.has(t)));
   const images=new Set();
   const keys=new Set();const src0=JSON.stringify({n:roots,t:[...used].map(k=>T[k])});
   for(const m of src0.matchAll(/"([A-Za-z]+_?[A-Za-z0-9]+)"/g))if(m[1] in G)keys.add(m[1]);
@@ -446,11 +550,7 @@ function assets(apply){
     const b=read(f);if(!b||!f.endsWith('.svg'))return {};
     const x=b.toString('utf8');
     const photo=/<image\b/.test(x)||b.length>150000;
-    const draw=(x.match(/<(rect|path|circle|ellipse|polygon|line)\b/g)||[]);
-    const colors=new Set((x.match(/(?:fill|stroke)="(#[0-9A-Fa-f]{3,8})"/g)||[]).map(c=>c.split('"')[1].toUpperCase()));
-    const plain=!photo&&!/<(linearGradient|radialGradient|filter|pattern)\b/.test(x)&&colors.size<=2;
-    const shape=plain&&draw.length>0&&draw.length<=2&&(draw.every(d=>d==='<rect')||/矩形|rect|背景|底|边框|容器|bg|border|shape|button|按钮/i.test(names.get(f)||''));
-    return {photo,shape,colors:[...colors],broken:!balanced(x)};
+    return {photo,...(photo?{}:plainShape(x)),broken:!balanced(x)};
   };
   const taken=new Map(),plan=[];
   for(const [f,name] of names){
@@ -466,7 +566,7 @@ function assets(apply){
   const pending=plan.filter(([f,o,,m])=>f!==o||m.broken).length+dupOf.size;
   if(!apply||!pending){
     for(const [f,o,n,m] of plan){if(f===o&&!m.shape&&!m.broken)continue;
-      console.log((f===o?o:f.slice(0,10)+'… → '+o)+'  ("'+short(n,32)+'")'+(m.shape?'  [plain shape '+m.colors.join(',')+' → CSS]':'')+(m.broken?'  [malformed SVG]':''));}
+      console.log((f===o?o:f.slice(0,10)+'… → '+o)+'  ("'+short(n,32)+'")'+(m.shape?'  [plain shape: '+m.shape+' → CSS]':'')+(m.broken?'  [malformed SVG]':''));}
     console.log(`${names.size} images, ${shapes.length} plain shapes (prefer CSS so states work)`+
       (pending?`; ${pending} files need renaming / dedupe / repair (older CLI) — run with --apply`:''));
     return;
@@ -482,6 +582,45 @@ function assets(apply){
   writeFileSync(file,text);
   console.log(`renamed ${moved}, merged ${removed} duplicates, repaired ${fixed} malformed SVGs in ${dirOf}; AST rewritten`);
   if(shapes.length)console.log(`plain shapes (likely button/card/tag backgrounds; prefer CSS so states work): ${shapes.map(p=>p[1]).join(', ')}`);
+}
+
+// 能直接用 CSS 画的图：只有一个图形、铺满整个画布（矩形 / 圆角矩形 / 椭圆），填充是纯色或渐变
+function plainShape(svg){
+  if(/<(filter|pattern|mask|clipPath|text|use)\b/.test(svg))return {};
+  const size=svg.match(/<svg[^>]*?\bwidth="([\d.]+)"[^>]*?\bheight="([\d.]+)"/);if(!size)return {};
+  const [W,H]=[+size[1],+size[2]];
+  const shapes=[...svg.matchAll(/<(rect|path|circle|ellipse|polygon|line|polyline)\b([^>]*)>/g)];
+  if(shapes.length!==1)return {};
+  const [,tag,attrs]=shapes[0];const a=k=>attrs.match(new RegExp('\\s'+k+'="([^"]*)"'))?.[1];
+  let box;
+  if(tag==='rect')box=[+(a('x')||0),+(a('y')||0),+(a('width')||0),+(a('height')||0)];
+  else if(tag==='circle'||tag==='ellipse'){const rx=+(a('r')||a('rx')||0),ry=+(a('r')||a('ry')||0);box=[+(a('cx')||0)-rx,+(a('cy')||0)-ry,2*rx,2*ry];}
+  else if(tag==='path')box=pathBox(a('d')||'');
+  if(!box||Math.abs(box[0])>1||Math.abs(box[1])>1||Math.abs(box[2]-W)>1||Math.abs(box[3]-H)>1)return {};
+  const fill=a('fill')||'';const opacity=a('fill-opacity')||a('opacity');
+  let paint;
+  if(/^#[0-9a-f]{3,8}$/i.test(fill)||/^(white|black)$/i.test(fill))paint=fill.toUpperCase()+(opacity?' @'+opacity:'');
+  else if(/^url\(#/.test(fill)&&/<(linear|radial)Gradient\b/.test(svg))paint='gradient';
+  else return {};
+  const outline=tag==='rect'?(a('rx')?`rounded r=${a('rx')}`:'rect'):tag==='path'?(/[CcQqAa]/.test(a('d')||'')?'rounded':'rect'):'ellipse';
+  return {shape:`${outline} ${paint}`};
+}
+function pathBox(d){
+  const tokens=d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e-?\d+)?/g)||[];let i=0,cmd='',x=0,y=0,sx=0,sy=0;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;const mark=()=>{minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);};
+  const num=()=>+tokens[i++];
+  const arity={M:2,L:2,T:2,H:1,V:1,C:6,S:4,Q:4,A:7,Z:0};
+  while(i<tokens.length){
+    if(/[a-zA-Z]/.test(tokens[i]))cmd=tokens[i++];
+    const C=cmd.toUpperCase(),rel=cmd!==C,n=arity[C];if(n===undefined)return null;
+    if(C==='Z'){x=sx;y=sy;mark();continue;}
+    const args=[];for(let k=0;k<n;k++){if(i>=tokens.length||/[a-zA-Z]/.test(tokens[i]))return null;args.push(num());}
+    if(C==='H')x=(rel?x:0)+args[0];else if(C==='V')y=(rel?y:0)+args[0];
+    else{const ex=args[n-2],ey=args[n-1];x=(rel?x:0)+ex;y=(rel?y:0)+ey;}
+    if(C==='M'){sx=x;sy=y;cmd=rel?'l':'L';}
+    mark();
+  }
+  return minX===Infinity?null:[minX,minY,maxX-minX,maxY-minY];
 }
 // Figma sometimes exports SVGs with unclosed <g> elements; browsers then refuse to render them.
 function balanced(x){const st=[];for(const m of x.matchAll(/<(\/?)([a-zA-Z][\w:-]*)[^>]*?(\/?)>/g)){if(m[0].startsWith('<?')||m[0].startsWith('<!'))continue;if(m[3])continue;if(m[1]){if(st.pop()!==m[2])return false;}else st.push(m[2]);}return st.length===0;}

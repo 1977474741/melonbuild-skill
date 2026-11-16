@@ -27,7 +27,7 @@
 - 实例：`{t:"C2", id?, args?, children?}`。`children` 只会是插槽 `{tag:"slotN", children}`。
 - 模板：`templates.C2 = {body, params?, variants?, uses}`。
   - body 里的 `{"$param":"text1"}` 是占位符，`mb show` 里显示为 `{text1}`。
-  - 展开顺序：取 `params` 默认值 → 用 `variants[args.variant]` 覆盖 → 用实例 `args` 覆盖。值为 `null` 表示该属性不存在。
+  - 展开顺序：取 `params` 默认值 → 用 `variants[args.variant]` 覆盖 → 用实例 `args` 覆盖。值为 `null` 表示该属性不存在：比如位置参数为 null，就是这个实例没有绝对定位，按父容器的排布摆放。
   - 参数名按类型编号（`text1`、`src1`、`width1`、`pos1`、`fills1`、`layout1`…），没有业务含义，封装时要按内容重新起名。
   - 多个属性一起变化时会收成一个 variant，通常对应组件状态（选中、禁用、成功、失败）。
   - `slotN` 是插槽位置，实例传入的节点就是该容器的子节点。
