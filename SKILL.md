@@ -27,23 +27,18 @@ description: 把 Figma 设计稿变成可直接合进项目的生产级代码：
 - 读项目，最多 5 次读取：`package.json`、样式方案（Tailwind / CSS Modules / styled / Less…）、组件库、已有的 token 或主题文件、组件和资源目录约定。
 - 空目录：先搭好项目骨架，默认 Vite + React + TypeScript + CSS Modules，再取数，因为图片要直接下载进项目的资源目录。
 
-### 2. 取数
+### 2. 取数（先只拿结构）
 
 ```bash
-melonbuild node-ast "<Figma链接>" --reuse components \
-  --image-dir <项目资源目录>/<模块名> -o .melonbuild/<模块名>.json 2>.melonbuild/fetch.log
-echo "exit=$?"; tail -3 .melonbuild/fetch.log          # 进度日志每张图一行，不要整段读
-node MB assets .melonbuild/<模块名>.json --apply       # 按图层命名、合并重复、修复坏 SVG、标出纯色形状
+melonbuild node-ast "<Figma链接>" --reuse components -q -o .melonbuild/<模块名>.remote.json
 ```
 
-`<模块名>` 用英文短横线形式的功能名（如 `dating`）。
+`<模块名>` 用英文短横线形式的功能名（如 `dating`）。这一步不下载图片，AST 里是图片的远程链接，等第 3 步确定实现范围后再下载。
 
 - `--reuse components` 最贴近真实组件：`Cn` 是组件候选，`Sn` 是屏幕外壳，参数、变体、插槽都已抽好。
-- 含照片的整组图片按 PNG 导出，倍率默认 `--image-scale auto`（2x/3x 移动端稿取 1，其余取 2），一般不用改；需要更高清时显式传 `2`。
-- 图片直接下载到项目资源目录。AST 里的路径是**相对 AST 文件**的，写 import 时要换成相对组件文件的路径或项目别名（如 `@/assets/dating/icon-定位.svg`）。
-- `.melonbuild/` 里还会生成 `*.remote.json`（保留原始图片链接，用于补下载）和 `*.assets.json`（下载记录），不用读。
 - 多页、整个画板时拉**一次全量**，不要逐页拉：跨页复用的组件只有在同一份 AST 里才能识别出来。
-- 退出码：3 表示额度或体积超限，告诉用户原因和订阅链接；4 表示部分图片失败，运行提示里的 `melonbuild download-images ...` 补下载，不会重新生成。
+- 含照片的整组图片按 PNG 导出，倍率默认 `--image-scale auto`（2x/3x 移动端稿取 1，其余取 2），一般不用改；需要更高清时显式传 `2`。
+- 退出码：3 表示额度或体积超限，告诉用户原因和订阅链接；429 限流时把 CLI 给出的原因原样转告用户。
 - 建议把 `.melonbuild/` 加进 `.gitignore`。
 
 ### 3. 鸟瞰与规划
@@ -66,12 +61,25 @@ node MB tokens  .melonbuild/x.json    # 颜色 / 字体 / 圆角 / 间距 / 阴�
   - 规则说明帧（如「8个字以上 小字号」「4个字以内 大字号」）是逻辑规格，落成代码里的规则，不是独立组件。
   - 宿主环境的外观（手机状态栏 9:41、微信胶囊、浏览器地址栏、Home Indicator）不属于页面，不写进页面组件；需要展示时放在预览外壳里。
 
+**下载图片**：范围定了再下，只下要实现的那些屏。
+
+```bash
+node MB subset .melonbuild/<模块名>.remote.json <单元id…> -o .melonbuild/<模块名>.scope.json  # 整份都要实现时跳过这步，直接用 remote.json
+melonbuild download-images .melonbuild/<模块名>.scope.json -q \
+  --image-dir <项目资源目录>/<模块名> --output .melonbuild/<模块名>.json
+node MB assets .melonbuild/<模块名>.json      # 标出可以改用 CSS 的纯色形状
+```
+
+- 之后所有 `MB` 查询都用 `.melonbuild/<模块名>.json`（图片已改成本地路径）。
+- 图片按 Figma 图层命名，内容相同的只存一份，Figma 导出的不完整 SVG 已修好。AST 里的路径**相对 AST 文件**，写 import 时换成相对组件文件的路径或项目别名（如 `@/assets/dating/icon-定位-3637b8db.svg`）。
+- 退出码 4 表示部分图片失败，按提示重跑 `download-images` 补下载，不会重新生成。
+
 ### 4. 实现（自底向上）
 
 1. **token**：写进项目已有的主题或变量文件，没有就新建 CSS 变量文件。
 2. **组件**：`node MB show <ast> C16 --expand` 一次看到组件和它内部的子组件；几个相关组件用 `node MB show <ast> C2 C3 C9` 一起读，样式块只输出一次。写组件时，props 来自 `params`，按内容起名，不用 `text1` 这类名字；`variants` 对应 variant 或布尔 props；`slotN` 对应 children 或具名插槽。
 3. **页面**：先选一个最完整的状态作为基准，`node MB show <ast> <单元id> --depth 4` 浏览，`node MB show <ast> <路径>` 下钻局部；同组的其他状态用 `node MB diff <ast> <基准> <状态>` 只看差异，不要整屏重读。
-4. **图片**：`assets` 标出的 `shape-*.svg`（纯色矩形或圆角矩形，例如按钮底、卡片白底、边框、标签底）改用 CSS 实现，这样 hover、disabled、选中等状态才能改颜色，用不到的文件就删掉。真正的图标、插画、照片照常引用。
+4. **图片**：`assets` 标出的纯色形状（纯色矩形或圆角矩形，例如按钮底、卡片白底、边框、标签底）改用 CSS 实现，这样 hover、disabled、选中等状态才能改颜色，用不到的文件就删掉。真正的图标、插画、照片照常引用。
 5. **交互**：连线、注释、状态差异落成事件、状态和路由（见下文）。
 6. 写完一个文件就继续下一个，不回读刚写的文件。
 
@@ -79,7 +87,7 @@ node MB tokens  .melonbuild/x.json    # 颜色 / 字体 / 圆角 / 间距 / 阴�
 
 - 运行项目自己的 typecheck / lint / build，修到全部通过。
 - `node MB check <ast> src --unit <单元id>`：检查文案和图片是否都已落进代码。缺失项逐条判断：拼接出来的文案（`292人已报名`）、CSS 截断的文案、改用 CSS 的形状图都属于正常情况。
-- 删掉资源目录里没有被引用的图片。
+- `node MB prune .melonbuild/<模块名>.json src --apply`：删掉资源目录里代码没引用的图片（改用 CSS 的形状、没实现的状态）。
 - 有浏览器工具时，起 dev server，每个界面和主要状态各截一张图，和设计意图对照粗看布局；有明显错位就修，不要反复截图微调像素。
 
 ## 状态合并（核心）

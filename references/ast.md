@@ -12,7 +12,7 @@
 | SECTION | 画板。大画板的子节点是一个个相互独立的界面；屏幕大小的 SECTION 本身就是一屏，子节点是这一屏的部件（导航栏、列表、tab 栏） |
 | TEXT | 文本，内容在 `text` |
 | RECTANGLE / ELLIPSE / LINE | 用 CSS 画的形状或装饰层 |
-| IMAGE-SVG | 整张导出的图片叶子，用 `<img src>`；纯矢量是 SVG，含照片的整组（照片 + 蒙版 + 遮罩）是 PNG。它不带 fills、strokes、effects、opacity、圆角；不要给它额外套包裹层，但 AST 里本来就有的外层盒子要保留。`mb assets` 标为 `shape-*` 的纯色形状改用 CSS 实现 |
+| IMAGE-SVG | 整张导出的图片叶子，用 `<img src>`；纯矢量是 SVG，含照片的整组（照片 + 蒙版 + 遮罩）是 PNG。它不带 fills、strokes、effects、opacity、圆角；不要给它额外套包裹层，但 AST 里本来就有的外层盒子要保留。`mb assets` 标出的纯色形状改用 CSS 实现 |
 | IMAGE-BG | 旋转、裁切或模糊过的背景图：外层容器 absolute + `pointer-events:none`，内部的 `<img>` 子节点承载 src，其 layout 字段原样照抄 |
 | MASK | 少见。蒙版组要么整组导出成一张图，要么改写成容器上的裁剪（见下方「蒙版」）；残留的 MASK 是裁剪原语（`path` 用于 clip-path），不是图片 |
 

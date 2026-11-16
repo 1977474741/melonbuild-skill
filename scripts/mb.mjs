@@ -15,8 +15,11 @@ const USAGE=`mb.mjs <command> <ast.json> [args]
   diff     <ast> <idA> <idB>           what changes from A to B (state merging)
   texts    <ast> [id]                  all text content (deduped)
   check    <ast> <dir...> [--unit id]  texts / images missing from generated code
-  assets   <ast> [--apply]             name images after their layers, merge duplicates,
-                                       repair malformed SVGs, flag plain shapes (→ CSS)
+  assets   <ast> [--apply]             flag plain-shape SVGs (→ CSS); for files from older CLIs
+                                       also rename hashed names, merge duplicates, repair SVGs
+  subset   <ast> <id...> -o <out>      keep only these units (+ the templates and styles they use);
+                                       then: melonbuild download-images <out> --image-dir … --output …
+  prune    <ast> <code-dir...> [--apply]  delete downloaded images the code never references
 
 path = <id or template>/<childIndex>/... e.g. 12:34/0/2`;
 
@@ -382,11 +385,29 @@ function check(dirs){
   if(missI.length)console.log('unreferenced images:\n  '+missI.slice(0,40).join('\n  ')+(missI.length>40?'\n  … +'+(missI.length-40):''));
 }
 
+
+// ---------- local image references ----------
+const LOCAL_IMAGE=/(^|[\/("'])([^\/("'\s]+\.(?:svg|png|jpe?g|webp|gif))(?=$|["')])/i;
+function localImageRefs(){
+  const out=[],seen=new Set();
+  const visit=v=>{
+    if(typeof v==='string'){if(/https?:\/\//.test(v))return;for(const m of v.matchAll(new RegExp(LOCAL_IMAGE.source,'gi'))){const full=v.slice(0,m.index+m[0].length).replace(/^.*url\(\s*["']?/,'').replace(/^["']/,'');const file=m[2];if(!seen.has(file)){seen.add(file);out.push({file,path:full});}}return;}
+    if(Array.isArray(v))return v.forEach(visit);if(v&&typeof v==='object')Object.values(v).forEach(visit);};
+  visit({n:ast.nodes,t:T,g:G});return out;
+}
+/** 图片目录：AST 里的本地路径相对 AST 文件 */
+function imageDir(){
+  const ref=localImageRefs()[0];if(!ref)return null;
+  const rel=ref.path.slice(0,ref.path.length-ref.file.length);
+  return join(file,'..',rel);
+}
+
 // ---------- assets ----------
 // CLI saves images as <sha256>.<ext>; give them names from their Figma layers so code stays readable.
 function assets(apply){
   const names=new Map(); // filename -> layer name
-  const fileOf=v=>{if(typeof v!=='string')return null;const m=v.match(/(?:^|[\/("'])([a-f0-9]{64}\.[a-z]+)/);return m?m[1]:null;};
+  // 本地图片引用（CLI --image-dir 改写后的相对路径）；远程链接不算
+  const fileOf=v=>{if(typeof v!=='string'||/https?:\/\//.test(v))return null;const m=v.match(LOCAL_IMAGE);return m?m[2]:null;};
   const fillOwner=new Map();
   const note=(v,name)=>{const f=fileOf(v);if(f&&name&&!names.has(f))names.set(f,name);};
   const paramNames=new Map(); // template -> param -> layer name
@@ -408,16 +429,15 @@ function assets(apply){
   walk(ast.nodes,(n,d,p)=>{visit(n,p);});for(const [,b] of bodies())walk([b],(n,d,p)=>{visit(n,p);});
   for(const [k,v] of Object.entries(G)){const s=JSON.stringify(v);const f=fileOf(s.replace(/\\"/g,'"'));if(f)note(f,fillOwner.get(k)||'image');}
   // also any file referenced but unnamed
-  for(const m of JSON.stringify({n:ast.nodes,t:T,g:G}).matchAll(/[a-f0-9]{64}\.[a-z]+/g))if(!names.has(m[0]))names.set(m[0],'image');
+  for(const ref of localImageRefs())if(!names.has(ref.file))names.set(ref.file,'image');
   const slug=s=>{const seg=String(s).split('/').map(x=>x.trim()).filter(Boolean);
     for(const part of [seg.at(-1),...seg.slice(0,-1).reverse()]){const clean=(part||'').toLowerCase().replace(/\b(frame|group|vector|rectangle|union|subtract|mask|layer)\b/g,' ').replace(/\b\d+\b/g,' ');
       const ascii=clean.replace(/[^a-z0-9]+/g,'-').replace(/^[-\d]+|-+$/g,'');if(ascii.length>=2)return ascii.slice(0,40);
       const cjk=clean.replace(/[^a-z0-9\u4e00-\u9fff]+/g,'-').replace(/^[-\d]+|-+$/g,'');if(/[\u4e00-\u9fff]/.test(cjk))return cjk.slice(0,24);}
     return 'img';};
   // locate the image directory from the first local reference
-  const anyRef=JSON.stringify({n:ast.nodes,t:T,g:G}).match(/([^"(]*?)([a-f0-9]{64}\.[a-z]+)/);
-  if(!anyRef){console.log('no local images (fetch with --image-dir first)');return;}
-  const dirOf=join(file,'..',anyRef[1].replace(/^url\(|['"]/g,''));
+  const dirOf=imageDir();
+  if(!dirOf){console.log('no local images (fetch with --image-dir first)');return;}
   const read=f=>{try{return readFileSync(join(dirOf,f));}catch{return null;}};
   // byte-identical downloads collapse into one file
   const byHash=new Map(),dupOf=new Map();
@@ -436,14 +456,19 @@ function assets(apply){
   for(const [f,name] of names){
     if(dupOf.has(f))continue;
     const ext=f.split('.').pop(),meta=info(f),sl=slug(name);
+    // 旧版 CLI 用 URL 哈希命名；新版已按图层命名，保持原名
+    if(!/^[a-f0-9]{64}\./.test(f)){taken.set(f,f);plan.push([f,f,name,meta]);continue;}
     let base=ext!=='svg'||meta.photo?(sl==='img'?'image':sl):(meta.shape?'shape-':/icon|logo/.test(sl)?'':'icon-')+sl;
     let out=base+'.'+ext;if(taken.has(out))out=base+'-'+f.slice(0,4)+'.'+ext;taken.set(out,f);plan.push([f,out,name,meta]);
   }
   const target=new Map(plan.map(([f,o])=>[f,o]));for(const [d,k] of dupOf)target.set(d,target.get(k));
   const shapes=plan.filter(p=>p[3].shape),broken=plan.filter(p=>p[3].broken);
-  if(!apply){
-    for(const [f,o,n,m] of plan)console.log(f.slice(0,10)+'… → '+o+'  ("'+short(n,32)+'")'+(m.shape?'  [plain shape '+m.colors.join(',')+' → CSS?]':'')+(m.broken?'  [malformed SVG, repaired on --apply]':''));
-    console.log(`${names.size} images → ${plan.length} files (${dupOf.size} byte-identical duplicates merged), ${shapes.length} plain shapes, ${broken.length} malformed SVGs. Run with --apply to rename, dedupe, repair and rewrite the AST.`);
+  const pending=plan.filter(([f,o,,m])=>f!==o||m.broken).length+dupOf.size;
+  if(!apply||!pending){
+    for(const [f,o,n,m] of plan){if(f===o&&!m.shape&&!m.broken)continue;
+      console.log((f===o?o:f.slice(0,10)+'… → '+o)+'  ("'+short(n,32)+'")'+(m.shape?'  [plain shape '+m.colors.join(',')+' → CSS]':'')+(m.broken?'  [malformed SVG]':''));}
+    console.log(`${names.size} images, ${shapes.length} plain shapes (prefer CSS so states work)`+
+      (pending?`; ${pending} files need renaming / dedupe / repair (older CLI) — run with --apply`:''));
     return;
   }
   let text=readFileSync(file,'utf8'),moved=0,fixed=0,removed=0;
@@ -471,9 +496,52 @@ function repairSvg(x){
   return out+x.slice(last);
 }
 
+// ---------- subset ----------
+// 只保留选中的单元，以及它们用到的模板、样式、连线：先拉不带图片的 AST 决定范围，再只下这部分图片
+function subset(specs,out){
+  if(!specs.length||!out)throw new Error('subset needs unit ids and -o <file>');
+  const units=specs.map(spec=>structuredClone(locate(spec)));
+  const used=new Set();
+  const visit=n=>{if(!n||typeof n!=='object')return;if(Array.isArray(n))return n.forEach(visit);
+    if(typeof n.t==='string'&&!used.has(n.t)&&T[n.t]){used.add(n.t);visit(T[n.t].body);}
+    Object.values(n).forEach(v=>{if(v&&typeof v==='object')visit(v);});};
+  units.forEach(visit);
+  const templates=Object.fromEntries([...used].map(k=>[k,T[k]]));
+  const keys=new Set();const collect=v=>{if(typeof v==='string'){if(v in G&&!keys.has(v)){keys.add(v);const e=G[v];if(e&&typeof e.extends==='string')e.extends.split(',').map(x=>x.trim()).forEach(collect);}return;}
+    if(Array.isArray(v))return v.forEach(collect);if(v&&typeof v==='object')Object.values(v).forEach(collect);};
+  collect({units,templates});
+  const globalStyles=Object.fromEntries(Object.keys(G).filter(k=>keys.has(k)).map(k=>[k,G[k]]));
+  const ids=new Set();walk(units,n=>{if(n.id!==undefined)ids.add(String(n.id));});
+  const connectors=(ast.connectors??[]).filter(c=>ids.has(String(c.from).split('/')[0])||ids.has(String(c.to).split('/')[0]));
+  const result={name:ast.name,fileKey:ast.fileKey,...(connectors.length?{connectors}:{}),nodes:units,templates,globalStyles};
+  writeFileSync(out,JSON.stringify(result));
+  const remote=new Set(JSON.stringify(result).match(/https:\/\/[^"\\)]+/g)??[]);
+  console.log(`subset: ${units.length} units, ${used.size}/${Object.keys(T).length} templates, ${keys.size}/${Object.keys(G).length} styles, ${remote.size} image links → ${out}`);
+}
+
+// ---------- prune ----------
+// 生码完成后删掉代码里没有引用的图片（只动 AST 图片目录里的图片文件）
+function prune(dirs,apply){
+  const dir=imageDir();if(!dir)throw new Error('no local images in this AST');
+  let code='';const exts=new Set(['.js','.jsx','.ts','.tsx','.vue','.svelte','.html','.css','.scss','.less','.json','.md','.mjs']);
+  const rd=p=>{let s;try{s=statSync(p);}catch{return;}
+    if(s.isDirectory()){if(/^(node_modules|\.git|dist|build|\.next|\.melonbuild)$/.test(basename(p)))return;for(const f of readdirSync(p))rd(join(p,f));}
+    else if(exts.has(extname(p))&&s.size<2e6)code+=readFileSync(p,'utf8')+'\n';};
+  for(const d of dirs.length?dirs:['.'])rd(d);
+  const files=readdirSync(dir).filter(f=>/\.(svg|png|jpe?g|webp|gif)$/i.test(f));
+  const unused=files.filter(f=>!code.includes(f)&&!code.includes(encodeURI(f)));
+  const bytes=unused.reduce((s,f)=>s+statSync(join(dir,f)).size,0);
+  console.log(`${files.length-unused.length}/${files.length} images referenced by code; ${unused.length} unused (${(bytes/1e6).toFixed(1)}MB) in ${dir}`);
+  if(!apply){if(unused.length)console.log('  '+unused.slice(0,30).join('\n  ')+(unused.length>30?'\n  … +'+(unused.length-30):'')+'\nRun with --apply to delete them.');return;}
+  for(const f of unused)unlinkSync(join(dir,f));
+  console.log(`deleted ${unused.length} files`);
+}
+
 try{
   if(cmd==='outline')outline();
   else if(cmd==='assets')assets(rest.includes('--apply'));
+  else if(cmd==='subset'){const out=opt('-o');subset(rest,out);}
+  else if(cmd==='prune'){const apply=rest.includes('--apply');prune(rest.filter(x=>x!=='--apply'),apply);}
   else if(cmd==='tokens')tokens();
   else if(cmd==='show'){const d=Number(opt('--depth','99'));const ex=rest.includes('--expand');const specs=rest.filter(x=>x!=='--expand');
     if(!specs.length)throw new Error('show needs an id, template or path');show(specs.map(spec=>({spec,root:locate(spec)})),d,ex);}
