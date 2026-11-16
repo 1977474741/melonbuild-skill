@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 // MelonBuild AST query tool: read the AST in small, targeted slices instead of loading it whole.
 // Zero dependencies. Node >= 18.
-import {readFileSync,readdirSync,statSync,renameSync,existsSync,writeFileSync} from 'node:fs';
+import {readFileSync,readdirSync,statSync,renameSync,existsSync,writeFileSync,unlinkSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {join,basename,extname} from 'node:path';
 
 const USAGE=`mb.mjs <command> <ast.json> [args]
 
-  outline  <ast> [--section <id>]      units, state groups, components, connectors
+  outline  <ast> [--section <id>] [--all]   screens, state groups, components, connectors
   tokens   <ast>                       colors / type / radius / spacing / shadow usage
-  show     <ast> <id|Cn|path> [--depth N]   compact subtree + resolved styles
+  show     <ast> <target...> [--depth N] [--expand]
+                                       compact subtree(s) + resolved styles; several targets
+                                       share one styles block; --expand inlines component refs
   diff     <ast> <idA> <idB>           what changes from A to B (state merging)
   texts    <ast> [id]                  all text content (deduped)
   check    <ast> <dir...> [--unit id]  texts / images missing from generated code
-  assets   <ast> [--apply]             rename hashed image files after their Figma layers
+  assets   <ast> [--apply]             name images after their layers, merge duplicates,
+                                       repair malformed SVGs, flag plain shapes (→ CSS)
 
 path = <id or template>/<childIndex>/... e.g. 12:34/0/2`;
 
@@ -50,6 +54,13 @@ function style(key){
   }
   resolved.set(key,v);return v;
 }
+// template parameter environment of a ref: params → variant → args (args may point to an outer env)
+function envOf(ref,outer={}){
+  const t=T[ref.t]||{};const e={...(t.params||{}),...(t.variants?.[ref.args?.variant]||{}),...(ref.args||{})};
+  for(const k in e){const v=e[k];if(v&&typeof v==='object'&&typeof v.$param==='string'&&v.$param in outer)e[k]=outer[v.$param];}
+  return e;
+}
+const bind=(v,env)=>v&&typeof v==='object'&&typeof v.$param==='string'&&env&&v.$param in env?env[v.$param]:v;
 const imgName=s=>{const m=String(s).match(/url\(([^)]+)\)/);return basename((m?m[1]:String(s)).replace(/["']/g,''));};
 
 // walk every concrete node; refs are visited as refs, template bodies are walked separately
@@ -75,56 +86,75 @@ function locate(spec){
 }
 
 // ---------- show ----------
-function attrLine(n){
-  const parts=[];
-  for(const [k,v] of Object.entries(n)){
-    if(['tag','t','id','name','children','text','args','__template'].includes(k))continue;
-    if(k==='width'&&'height' in n){parts.push(val(v)+'x'+val(n.height));continue;}
+function attrLine(n,env){
+  const parts=[];const v=k=>bind(n[k],env);
+  for(const k of Object.keys(n)){
+    if(['tag','t','id','name','children','text','args','__template','__path'].includes(k))continue;
+    if(k==='width'&&'height' in n){parts.push(val(v('width'))+'x'+val(v('height')));continue;}
     if(k==='height'&&'width' in n)continue;
-    parts.push(k+'='+val(v));
+    const x=v(k);if(x===null||x===undefined)continue; // param resolved to "absent"
+    parts.push(k+'='+val(x));
   }
   return parts.join(' ');
 }
-function show(root,maxDepth){
-  const lines=[],usedStyles=new Set(),usedTemplates=new Set();
+function show(targets,maxDepth,expand){
+  const usedStyles=new Set(),usedTemplates=new Set(),shown=new Set(targets.filter(t=>t.root.__template).map(t=>t.root.__template));
   const note=v=>{if(typeof v==='string'&&v in G)usedStyles.add(v);};
-  (function rec(n,d,path){
-    const pad='  '.repeat(d);
-    if(isRef(n)&&/^T\d/.test(n.t)&&!kids(n).length&&T[n.t]?.body&&!T[n.t].params){
-      // tiny compression templates: inline them instead of making the reader look them up
-      return rec({...T[n.t].body,...(n.id!==undefined?{id:n.id}:{})},d,path);
+  for(const {spec,root} of targets){
+    const lines=[];
+    (function rec(n,d,path,env){
+      const pad='  '.repeat(d);
+      if(isRef(n)&&/^T\d/.test(n.t)&&!kids(n).length&&T[n.t]?.body&&!T[n.t].params){
+        // tiny compression templates: inline them instead of making the reader look them up
+        return rec({...T[n.t].body,...(n.id!==undefined?{id:n.id}:{})},d,path,env);
+      }
+      if(isRef(n)){
+        const args=Object.entries(n.args||{}).map(([k,v])=>{v=bind(v,env);note(v);return k+'='+(v===null||v===undefined?'∅':val(v));}).join(' ');
+        if(expand&&T[n.t]?.body&&!/^S/.test(n.t)&&d<maxDepth){
+          lines.push(pad+'<'+n.t+(n.id!==undefined?' #'+n.id:'')+(args?' '+args:'')+'> expanded  ['+path+']');
+          const inner=envOf(n,env);
+          for(const v of Object.values(inner))note(v);
+          // slot contents are placed where <slotN/> sits in the body
+          const slots=Object.fromEntries(kids(n).map(s=>[s.tag,kids(s)]));
+          return rec({...T[n.t].body,__slots:slots},d+1,path,inner);
+        }
+        usedTemplates.add(n.t);
+        lines.push(pad+'<'+n.t+(n.id!==undefined?' #'+n.id:'')+(args?' '+args:'')+(kids(n).length?'>':' />')+'  ['+path+']');
+        if(kids(n).length&&d<maxDepth)kids(n).forEach((c,i)=>rec(c,d+1,path+'/'+i,env));
+        return;
+      }
+      if(/^slot\d+$/.test(n.tag||'')&&!kids(n).length&&env&&env.__slots?.[n.tag]){
+        lines.push(pad+'<'+n.tag+'> (filled)');env.__slots[n.tag].forEach((c,i)=>rec(c,d+1,path+'/'+i,env));return;
+      }
+      if(n.__slots)env={...env,__slots:n.__slots};
+      for(const k of Object.keys(n))note(bind(n[k],env));
+      const head=(n.tag||'?')+(n.id!==undefined?' #'+n.id:'')+(n.name&&!AUTO.test(n.name)?' "'+short(n.name,40)+'"':'');
+      const tv=bind(n.text,env);
+      const text=n.text!==undefined?'  ⟨'+(tv&&typeof tv==='object'?val(tv):short(tv??'∅',120))+'⟩':'';
+      const a=attrLine(Object.fromEntries(Object.entries(n).filter(([k])=>k!=='__slots')),env);
+      lines.push(pad+head+(a?' '+a:'')+text);
+      const c=kids(n);
+      if(!c.length)return;
+      if(d>=maxDepth){lines.push(pad+'  … '+c.length+' children / '+c.reduce((s,x)=>s+count(x),0)+' nodes  → show '+path+' ');return;}
+      c.forEach((x,i)=>rec(x,d+1,path+'/'+i,env));
+    })(root,0,spec,{});
+    // template header when showing a template
+    if(root.__template){
+      const t=T[root.__template];
+      const meta=['uses='+(t.uses??'?'),'nodes='+expandedSize(root.__template)];
+      if(t.params)meta.push('params '+JSON.stringify(t.params));
+      if(t.variants)meta.push('variants '+JSON.stringify(t.variants));
+      for(const v of [...Object.values(t.params||{}),...Object.values(t.variants||{}).flatMap(Object.values)])note(v);
+      lines.unshift('template '+root.__template+' '+meta.join(' '));
     }
-    if(isRef(n)){
-      usedTemplates.add(n.t);
-      const args=Object.entries(n.args||{}).map(([k,v])=>{note(v);return k+'='+val(v);}).join(' ');
-      lines.push(pad+'<'+n.t+(n.id!==undefined?' #'+n.id:'')+(args?' '+args:'')+(kids(n).length?'>':' />')+'  ['+path+']');
-      if(kids(n).length&&d<maxDepth)kids(n).forEach((c,i)=>rec(c,d+1,path+'/'+i));
-      return;
-    }
-    for(const a of STYLE_ATTRS)note(n[a]);
-    for(const v of Object.values(n))note(v);
-    const head=(n.tag||'?')+(n.id!==undefined?' #'+n.id:'')+(n.name&&!/^(Frame|Group|Rectangle|Vector|Ellipse|Line)\s?\d*$/.test(n.name)?' "'+short(n.name,40)+'"':'');
-    const text=n.text!==undefined?'  ⟨'+(typeof n.text==='object'?val(n.text):short(n.text,120))+'⟩':'';
-    const a=attrLine(n);
-    lines.push(pad+head+(a?' '+a:'')+text);
-    const c=kids(n);
-    if(!c.length)return;
-    if(d>=maxDepth){lines.push(pad+'  … '+c.length+' children / '+c.reduce((s,x)=>s+count(x),0)+' nodes  → show '+path+' ');return;}
-    c.forEach((x,i)=>rec(x,d+1,path+'/'+i));
-  })(root,0,root.__template||String(root.id??root.t??'?'));
-  // template header when showing a template
-  if(root.__template){
-    const t=T[root.__template];
-    const meta=['uses='+(t.uses??'?'),'nodes='+expandedSize(root.__template)];
-    if(t.params)meta.push('params '+JSON.stringify(t.params));
-    if(t.variants)meta.push('variants '+JSON.stringify(t.variants));
-    for(const v of [...Object.values(t.params||{}),...Object.values(t.variants||{}).flatMap(Object.values)])note(v);
-    lines.unshift('template '+root.__template+' '+meta.join(' '));
+    if(isRef(root))lines.push('  (instance of '+root.t+': show '+root.t+' for its body; only args/slots differ per instance)');
+    if(targets.length>1)console.log('=== '+spec);
+    console.log(lines.join('\n'));
   }
-  if(isRef(root))lines.push('  (instance of '+root.t+': show '+root.t+' for its body; only args/slots differ per instance)');
-  console.log(lines.join('\n'));
-  if(usedTemplates.size){
-    console.log('\nrefs: '+[...usedTemplates].map(t=>t+'(uses='+(T[t]?.uses??'?')+',nodes='+expandedSize(t)+(T[t]?.params?',params='+Object.keys(T[t].params).join('|'):'')+(T[t]?.variants?',variants='+Object.keys(T[t].variants).join('|'):'')+')').join(' '));
+  const pending=[...usedTemplates].filter(t=>!shown.has(t));
+  if(pending.length){
+    console.log('\nrefs: '+pending.map(t=>t+'(uses='+(T[t]?.uses??'?')+',nodes='+expandedSize(t)+(T[t]?.params?',params='+Object.keys(T[t].params).join('|'):'')+(T[t]?.variants?',variants='+Object.keys(T[t].variants).join('|'):'')+')').join(' '));
+    console.log('  (read several at once: show <ast> '+pending.slice(0,6).join(' ')+' — or --expand to inline them here)');
   }
   if(usedStyles.size){
     console.log('\nstyles:');
@@ -141,6 +171,8 @@ function units(){
   const out=[];
   (function rec(list,group){
     for(const n of list){
+      // a SECTION about the size of a screen is one screen made of parts, not a board of screens
+      if(!isRef(n)&&n.tag==='SECTION'&&group&&n.width&&n.width<=2000&&n.height<=6000){out.push({unit:n,group});continue;}
       if(!isRef(n)&&(n.tag==='SECTION'||n.tag==='CANVAS')){out.push({section:n,group});rec(kids(n),n);continue;}
       out.push({unit:n,group});
     }
@@ -157,7 +189,8 @@ function bag(n,depth=0,b=new Map()){
   return b;
 }
 function jaccard(a,b){let i=0,u=0;const keys=new Set([...a.keys(),...b.keys()]);for(const k of keys){const x=a.get(k)||0,y=b.get(k)||0;i+=Math.min(x,y);u+=Math.max(x,y);}return u?i/u:0;}
-const dim=n=>isRef(n)?(T[n.t]?.body||{}):n;
+const dim=n=>{if(!isRef(n))return n;const b=T[n.t]?.body||{},e=envOf(n);return {...b,width:bind(b.width,e),height:bind(b.height,e)};};
+const wh=d=>(typeof d.width==='number'?d.width:'?')+'x'+(typeof d.height==='number'?d.height:'?');
 function texts(n,acc=[],env={}){
   if(!n)return acc;
   if(isRef(n)){
@@ -171,11 +204,15 @@ function texts(n,acc=[],env={}){
 }
 // expand a ref one level for similarity purposes (shell template + slot contents)
 const flatRef=n=>isRef(n)?{tag:'REF',name:n.t,children:[T[n.t]?.body,...kids(n).flatMap(kids)].filter(Boolean)}:n;
+const statePrefix=n=>{const nm=String((isRef(n)?T[n.t]?.body?.name:n.name)||'');const m=nm.match(/^(.{2,20}?)\s*[-_—–·|｜/]\s*\S/);return m&&!AUTO.test(m[1])?m[1].replace(/页$/,'').trim():null;};
 function clusters(list){
   const bags=list.map(u=>bag(flatRef(u))),parent=list.map((_,i)=>i),near=list.map(()=>null);
   const find=i=>parent[i]===i?i:(parent[i]=find(parent[i]));
   for(let i=0;i<list.length;i++)for(let j=i+1;j<list.length;j++){
     if(isRef(list[i])&&isRef(list[j])&&list[i].t===list[j].t&&/^S/.test(list[i].t)){parent[find(j)]=find(i);continue;}
+    // designers name state frames "<screen>-<state>": same prefix + same width = same screen
+    const pi=statePrefix(list[i]),pj=statePrefix(list[j]);
+    if(pi&&pi===pj&&dim(list[i]).width===dim(list[j]).width){parent[find(j)]=find(i);continue;}
     const a=dim(list[i]),b=dim(list[j]);
     if(!a.width||!b.width||Math.abs(a.width-b.width)/Math.max(a.width,b.width)>0.08)continue;
     const s=jaccard(bags[i],bags[j]);
@@ -211,7 +248,7 @@ function outline(){
   for(const e of entries){if(e.unit){const g=e.group?A(e.group):'(root)';if(!byGroup.has(g))byGroup.set(g,{group:e.group,list:[]});byGroup.get(g).list.push(e.unit);}}
   const all=rest.includes('--all');
   const isNote=u=>!isRef(u)&&u.tag==='TEXT';
-  const allScreens=[...byGroup.values()].flatMap(g=>g.list).filter(u=>!isNote(u)&&(all||count(u)>12));
+  const allScreens=[...byGroup.values()].flatMap(g=>g.list).filter(u=>!isNote(u)&&count(u)>12);
   // global clustering so states split across sections still group together
   const {groups,near}=clusters(allScreens);
   const gOf=new Map();let gi=0;const summary=[];
@@ -223,16 +260,21 @@ function outline(){
   const common=big.length<4?Infinity:Math.max(3,big.length*0.25);
   const line=u=>{const d=dim(u);
     const tx=[...new Set(texts(u))].filter(t=>(df.get(t)||0)<common).slice(0,5).map(s=>short(s,20)).join(' | ');
-    return `${gOf.has(u)?'≈g'+gOf.get(u)+' ':''}${A(u)} ${isRef(u)?'<'+u.t+'> ':''}"${short(label(u),30)}" ${d.width??'?'}x${d.height??'?'} n=${count(u)}${tx?'  '+tx:''}${nearOf.get(u)?'  ~'+A(nearOf.get(u)):''}`;};
+    return `${gOf.has(u)?'≈g'+gOf.get(u)+' ':''}${A(u)} ${isRef(u)?'<'+u.t+'> ':''}"${short(label(u),30)}" ${wh(d)} n=${count(u)}${tx?'  '+tx:''}${nearOf.get(u)?'  ~'+A(nearOf.get(u)):''}`;};
   console.log('\nunits (n=nodes; ≈gN = same screen/part in different states → build once, use diff; ~id = partly similar):');
   for(const [gid,{group,list}] of byGroup){
     console.log(group?`SECTION ${A(group)} "${short(group.name||'',50)}" ${list.length} units`:'(root)');
     const notes=list.filter(isNote);
     const screens=list.filter(u=>allScreens.includes(u)),small=list.filter(u=>!isNote(u)&&!allScreens.includes(u));
     for(const u of screens)console.log('  '+line(u));
-    if(small.length){const by=new Map();for(const u of small){const k=short(label(u),24);by.set(k,(by.get(k)||0)+1);}
+    if(all)for(const u of small)console.log('  · '+line(u));
+    if(small.length&&!all){const by=new Map();for(const u of small){const k=short(label(u),24);by.set(k,(by.get(k)||0)+1);}
       console.log('  small parts ('+small.length+'): '+[...by].map(([k,c])=>k+(c>1?'×'+c:'')).join(', ')+'  (--all to list)');}
-    if(notes.length)console.log('  notes: '+notes.map(n=>'"'+short(n.text??n.name,all?400:90)+'"').join(' ; '));
+    // short canvas texts are board titles; longer ones are designer annotations (requirements)
+    const txt=n=>String(n.text??n.name??'');
+    const titles=notes.filter(n=>txt(n).length<=10&&!/[，。,.:：；;!?！？]/.test(txt(n))),ann=notes.filter(n=>!titles.includes(n));
+    if(titles.length)console.log('  titles: '+titles.map(n=>'"'+txt(n)+'"').join(' ; '));
+    if(ann.length)console.log('  notes (requirements): '+ann.map(n=>'"'+short(txt(n),all?400:90)+'"').join(' ; '));
   }
   if(summary.length)console.log('\nstate groups:\n  '+summary.join('\n  '));
   // components: rank by uses × size, the reuse value
@@ -270,8 +312,9 @@ function tokens(){
     if(v.boxShadow||v.backdropFilter||v.filter||v.textShadow){add('effect',v.boxShadow||v.textShadow||v.backdropFilter||v.filter,w);continue;}
     if(v.gap)add('gap',v.gap,w);if(v.padding)add('padding',v.padding,w);
   }
-  walk(ast.nodes,n=>{if(n.borderRadius)add('radius',n.borderRadius,1);});
-  for(const [,b] of bodies())walk([b],n=>{if(n.borderRadius&&typeof n.borderRadius==='string')add('radius',n.borderRadius,1);});
+  const zero=r=>/^(0(px)?\s*)+$/.test(String(r).trim());
+  walk(ast.nodes,n=>{if(n.borderRadius&&typeof n.borderRadius==='string'&&!zero(n.borderRadius))add('radius',n.borderRadius,1);});
+  for(const [,b] of bodies())walk([b],n=>{if(n.borderRadius&&typeof n.borderRadius==='string'&&!zero(n.borderRadius))add('radius',n.borderRadius,1);});
   for(const [cat,t] of tally){
     const top=[...t].sort((a,b)=>b[1]-a[1]).slice(0,cat==='effect'||cat==='gradient'?8:20);
     console.log(cat+': '+top.map(([k,c])=>short(k,cat==='effect'||cat==='gradient'?90:48)+' ×'+c).join(' ; '));
@@ -293,6 +336,7 @@ function diff(aSpec,bSpec){
     const ka=new Set(Object.keys(a)),kb=new Set(Object.keys(b));
     for(const k of new Set([...ka,...kb])){
       if(['children','id','canvasXY'].includes(k))continue;
+      if(k==='args'||k==='params'){const x=a[k]||{},y=b[k]||{};for(const q of new Set([...Object.keys(x),...Object.keys(y)]))if(!same(x[q],y[q]))emit(`~ ${path} ${k}.${q}: ${x[q]===undefined?'∅':short(val(x[q]),60)} → ${y[q]===undefined?'∅':short(val(y[q]),60)}`);continue;}
       if(!same(a[k],b[k]))emit(`~ ${path} ${k}: ${a[k]===undefined?'∅':short(val(a[k]),70)} → ${b[k]===undefined?'∅':short(val(b[k]),70)}`);
     }
     const ca=kids(a),cb=kids(b);
@@ -320,7 +364,6 @@ function check(dirs){
   // templates reachable from the chosen roots
   const used=new Set();const visit=n=>{if(!n)return;if(isRef(n)&&!used.has(n.t)){used.add(n.t);visit(T[n.t]?.body);}kids(n).forEach(visit);};roots.forEach(visit);
   const allTexts=new Set(texts({children:roots,tag:'ROOT'}));
-  for(const [,t] of Object.entries(T).filter(([k])=>used.has(k)))for(const v of [...Object.values(t.params||{}),...Object.values(t.variants||{}).flatMap(Object.values)])if(typeof v==='string'&&!(v in G)&&!/\.(svg|png|jpe?g)$/i.test(v)&&!/^-?[\d.]+$/.test(v))allTexts.add(v.trim());
   const images=new Set();
   const keys=new Set();const src0=JSON.stringify({n:roots,t:[...used].map(k=>T[k])});
   for(const m of src0.matchAll(/"([A-Za-z]+_?[A-Za-z0-9]+)"/g))if(m[1] in G)keys.add(m[1]);
@@ -360,7 +403,7 @@ function assets(apply){
       for(const src of [n.args||{},t.params||{},...Object.values(t.variants||{})])for(const [k,v] of Object.entries(src)){if(pn[k])note(v,pn[k]);if(typeof v==='string'&&v in G)fillOwner.set(v,fillOwner.get(v)||pn[k]||t.body?.name);}
       return;}
     if(n.src)note(n.src,nm(n,p));
-    if(typeof n.fills==='string'&&!fillOwner.has(n.fills))fillOwner.set(n.fills,nm(n,p));
+    for(const k of ['fills','maskFills'])if(typeof n[k]==='string'&&!fillOwner.has(n[k]))fillOwner.set(n[k],nm(n,p)+(k==='maskFills'?' mask':''));
   };
   walk(ast.nodes,(n,d,p)=>{visit(n,p);});for(const [,b] of bodies())walk([b],(n,d,p)=>{visit(n,p);});
   for(const [k,v] of Object.entries(G)){const s=JSON.stringify(v);const f=fileOf(s.replace(/\\"/g,'"'));if(f)note(f,fillOwner.get(k)||'image');}
@@ -371,28 +414,69 @@ function assets(apply){
       const ascii=clean.replace(/[^a-z0-9]+/g,'-').replace(/^[-\d]+|-+$/g,'');if(ascii.length>=2)return ascii.slice(0,40);
       const cjk=clean.replace(/[^a-z0-9\u4e00-\u9fff]+/g,'-').replace(/^[-\d]+|-+$/g,'');if(/[\u4e00-\u9fff]/.test(cjk))return cjk.slice(0,24);}
     return 'img';};
+  // locate the image directory from the first local reference
+  const anyRef=JSON.stringify({n:ast.nodes,t:T,g:G}).match(/([^"(]*?)([a-f0-9]{64}\.[a-z]+)/);
+  if(!anyRef){console.log('no local images (fetch with --image-dir first)');return;}
+  const dirOf=join(file,'..',anyRef[1].replace(/^url\(|['"]/g,''));
+  const read=f=>{try{return readFileSync(join(dirOf,f));}catch{return null;}};
+  // byte-identical downloads collapse into one file
+  const byHash=new Map(),dupOf=new Map();
+  for(const f of names.keys()){const b=read(f);if(!b)continue;const h=createHash('sha1').update(b).digest('hex');if(byHash.has(h))dupOf.set(f,byHash.get(h));else byHash.set(h,f);}
+  const info=f=>{
+    const b=read(f);if(!b||!f.endsWith('.svg'))return {};
+    const x=b.toString('utf8');
+    const photo=/<image\b/.test(x)||b.length>150000;
+    const draw=(x.match(/<(rect|path|circle|ellipse|polygon|line)\b/g)||[]);
+    const colors=new Set((x.match(/(?:fill|stroke)="(#[0-9A-Fa-f]{3,8})"/g)||[]).map(c=>c.split('"')[1].toUpperCase()));
+    const plain=!photo&&!/<(linearGradient|radialGradient|filter|pattern)\b/.test(x)&&colors.size<=2;
+    const shape=plain&&draw.length>0&&draw.length<=2&&(draw.every(d=>d==='<rect')||/矩形|rect|背景|底|边框|容器|bg|border|shape|button|按钮/i.test(names.get(f)||''));
+    return {photo,shape,colors:[...colors],broken:!balanced(x)};
+  };
   const taken=new Map(),plan=[];
   for(const [f,name] of names){
-    const ext=f.split('.').pop();let base=(ext==='svg'&&!/icon|logo/.test(slug(name))?'icon-':'')+slug(name);
-    if(ext!=='svg')base=slug(name)==='img'?'image':slug(name);
-    let out=base+'.'+ext;if(taken.has(out))out=base+'-'+f.slice(0,4)+'.'+ext;taken.set(out,f);plan.push([f,out,name]);
+    if(dupOf.has(f))continue;
+    const ext=f.split('.').pop(),meta=info(f),sl=slug(name);
+    let base=ext!=='svg'||meta.photo?(sl==='img'?'image':sl):(meta.shape?'shape-':/icon|logo/.test(sl)?'':'icon-')+sl;
+    let out=base+'.'+ext;if(taken.has(out))out=base+'-'+f.slice(0,4)+'.'+ext;taken.set(out,f);plan.push([f,out,name,meta]);
   }
-  if(!apply){for(const [f,o,n] of plan)console.log(f.slice(0,10)+'… → '+o+'  ("'+short(n,40)+'")');console.log(plan.length+' images. Run with --apply to rename files and rewrite the AST.');return;}
-  // locate image dir from the first relative reference
-  const anyRef=JSON.stringify({n:ast.nodes,t:T,g:G}).match(/([^"(]*?)([a-f0-9]{64}\.[a-z]+)/);
-  if(!anyRef){console.log('no local images');return;}
-  const dirOf=join(file,'..',anyRef[1].replace(/^url\(|['"]/g,''));
-  let text=readFileSync(file,'utf8'),moved=0;
-  for(const [f,o] of plan){const from=join(dirOf,f),to=join(dirOf,o);if(existsSync(from)&&!existsSync(to)){renameSync(from,to);moved++;}text=text.split(f).join(o);}
+  const target=new Map(plan.map(([f,o])=>[f,o]));for(const [d,k] of dupOf)target.set(d,target.get(k));
+  const shapes=plan.filter(p=>p[3].shape),broken=plan.filter(p=>p[3].broken);
+  if(!apply){
+    for(const [f,o,n,m] of plan)console.log(f.slice(0,10)+'… → '+o+'  ("'+short(n,32)+'")'+(m.shape?'  [plain shape '+m.colors.join(',')+' → CSS?]':'')+(m.broken?'  [malformed SVG, repaired on --apply]':''));
+    console.log(`${names.size} images → ${plan.length} files (${dupOf.size} byte-identical duplicates merged), ${shapes.length} plain shapes, ${broken.length} malformed SVGs. Run with --apply to rename, dedupe, repair and rewrite the AST.`);
+    return;
+  }
+  let text=readFileSync(file,'utf8'),moved=0,fixed=0,removed=0;
+  for(const [f,o,,m] of plan){
+    const from=join(dirOf,f),to=join(dirOf,o);
+    if(existsSync(from)&&!existsSync(to)){renameSync(from,to);moved++;}
+    if(m.broken&&existsSync(to)){writeFileSync(to,repairSvg(readFileSync(to,'utf8')));fixed++;}
+  }
+  for(const d of dupOf.keys()){const p=join(dirOf,d);if(existsSync(p)){unlinkSync(p);removed++;}}
+  for(const [f,o] of target)text=text.split(f).join(o);
   writeFileSync(file,text);
-  console.log(`renamed ${moved}/${plan.length} files in ${dirOf}; AST rewritten`);
+  console.log(`renamed ${moved}, merged ${removed} duplicates, repaired ${fixed} malformed SVGs in ${dirOf}; AST rewritten`);
+  if(shapes.length)console.log(`plain shapes (likely button/card/tag backgrounds; prefer CSS so states work): ${shapes.map(p=>p[1]).join(', ')}`);
+}
+// Figma sometimes exports SVGs with unclosed <g> elements; browsers then refuse to render them.
+function balanced(x){const st=[];for(const m of x.matchAll(/<(\/?)([a-zA-Z][\w:-]*)[^>]*?(\/?)>/g)){if(m[0].startsWith('<?')||m[0].startsWith('<!'))continue;if(m[3])continue;if(m[1]){if(st.pop()!==m[2])return false;}else st.push(m[2]);}return st.length===0;}
+function repairSvg(x){
+  const st=[];let out='',last=0;
+  for(const m of x.matchAll(/<(\/?)([a-zA-Z][\w:-]*)[^>]*?(\/?)>/g)){
+    if(m[3])continue;
+    if(!m[1]){st.push(m[2]);continue;}
+    if(st.includes(m[2])){let close='';while(st.length&&st.at(-1)!==m[2])close+='</'+st.pop()+'>';st.pop();
+      out+=x.slice(last,m.index)+close;last=m.index;}
+  }
+  return out+x.slice(last);
 }
 
 try{
   if(cmd==='outline')outline();
   else if(cmd==='assets')assets(rest.includes('--apply'));
   else if(cmd==='tokens')tokens();
-  else if(cmd==='show'){const d=Number(opt('--depth','99'));if(!rest[0])throw new Error('show needs an id, template or path');show(locate(rest[0]),d);}
+  else if(cmd==='show'){const d=Number(opt('--depth','99'));const ex=rest.includes('--expand');const specs=rest.filter(x=>x!=='--expand');
+    if(!specs.length)throw new Error('show needs an id, template or path');show(specs.map(spec=>({spec,root:locate(spec)})),d,ex);}
   else if(cmd==='diff'){if(rest.length<2)throw new Error('diff needs two ids');diff(rest[0],rest[1]);}
   else if(cmd==='texts'){const n=rest[0]?locate(rest[0]):{tag:'ROOT',children:ast.nodes};console.log([...new Set(texts(n))].join('\n'));}
   else if(cmd==='check')check(rest);

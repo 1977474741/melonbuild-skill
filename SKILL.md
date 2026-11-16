@@ -13,7 +13,7 @@ description: 把 Figma 设计稿变成可直接合进项目的生产级代码：
 
 1. **不读 AST 原文件。** AST 动辄几百 KB，一律通过 `MB` 查询：先 `outline`，再按需 `show` / `diff`。
 2. **每个任务只取一次数**，产物落在 `.melonbuild/` 下。已有就复用；用户说设计改了才加 `--force-refresh`。
-3. **每个模板只读一次**，读完写成组件；页面里的模板引用保持折叠，状态之间只看 `diff`。
+3. **每个模板只读一次**，读完写成组件；页面里的模板引用保持折叠，状态之间只看 `diff`。要一起看的东西一次读完：`show` 可以接多个目标，`--expand` 会把子组件内联展开，不要一个个分开调用。
 4. **AST 写了什么就还原什么，没写的不补**（圆角、阴影、object-fit 等）。字段怎么落 CSS 见 [references/fidelity.md](references/fidelity.md)；第一次写样式前读一遍。
 5. **代码由你逐个组件判断后手写。** 脚本只用来取数、查询、核对，不用脚本批量生成页面代码。
 6. **跟随项目。** 框架、样式方案、组件库、目录结构、命名、lint 规则都以项目现状为准；项目没有的依赖不擅自引入。
@@ -24,18 +24,24 @@ description: 把 Figma 设计稿变成可直接合进项目的生产级代码：
 
 - CLI：`melonbuild --version`；没装就 `npm i -g melonbuild-cli`。
 - 登录：`melonbuild whoami --json`。退出码 2 表示未登录，请用户自己运行 `melonbuild login`（要在浏览器里确认），不要替用户操作。
-- 读项目，最多 5 次读取：`package.json`、样式方案（Tailwind / CSS Modules / styled / Less…）、组件库、已有的 token 或主题文件、组件和资源目录约定。空目录时默认 Vite + React + TypeScript + CSS Modules。
+- 读项目，最多 5 次读取：`package.json`、样式方案（Tailwind / CSS Modules / styled / Less…）、组件库、已有的 token 或主题文件、组件和资源目录约定。
+- 空目录：先搭好项目骨架，默认 Vite + React + TypeScript + CSS Modules，再取数，因为图片要直接下载进项目的资源目录。
 
 ### 2. 取数
 
 ```bash
 melonbuild node-ast "<Figma链接>" --reuse components \
-  --image-dir <项目资源目录>/<模块名> -o .melonbuild/<模块名>.json
-node MB assets .melonbuild/<模块名>.json --apply   # 按图层名重命名图片，同时改写 AST
+  --image-dir <项目资源目录>/<模块名> -o .melonbuild/<模块名>.json 2>.melonbuild/fetch.log
+echo "exit=$?"; tail -3 .melonbuild/fetch.log          # 进度日志每张图一行，不要整段读
+node MB assets .melonbuild/<模块名>.json --apply       # 按图层命名、合并重复、修复坏 SVG、标出纯色形状
 ```
 
+`<模块名>` 用英文短横线形式的功能名（如 `dating`）。
+
 - `--reuse components` 最贴近真实组件：`Cn` 是组件候选，`Sn` 是屏幕外壳，参数、变体、插槽都已抽好。
-- 图片直接下载到项目资源目录，代码里直接引用。
+- 含照片的整组图片按 PNG 导出，倍率默认 `--image-scale auto`（2x/3x 移动端稿取 1，其余取 2），一般不用改；需要更高清时显式传 `2`。
+- 图片直接下载到项目资源目录。AST 里的路径是**相对 AST 文件**的，写 import 时要换成相对组件文件的路径或项目别名（如 `@/assets/dating/icon-定位.svg`）。
+- `.melonbuild/` 里还会生成 `*.remote.json`（保留原始图片链接，用于补下载）和 `*.assets.json`（下载记录），不用读。
 - 多页、整个画板时拉**一次全量**，不要逐页拉：跨页复用的组件只有在同一份 AST 里才能识别出来。
 - 退出码：3 表示额度或体积超限，告诉用户原因和订阅链接；4 表示部分图片失败，运行提示里的 `melonbuild download-images ...` 补下载，不会重新生成。
 - 建议把 `.melonbuild/` 加进 `.gitignore`。
@@ -54,27 +60,39 @@ node MB tokens  .melonbuild/x.json    # 颜色 / 字体 / 圆角 / 间距 / 阴�
 - **组件**：按 outline 的组件排行，给 `Cn` 起语义化名称；`same skeleton` 提示的几个模板合并成一个组件加 variant；能用项目已有组件或组件库的直接用。
 - **token**：用到两次及以上的值进 token，只出现一次的直接写字面值。
 - **尺寸策略**：移动端 2x/3x 稿要换算倍率；整页绝对定位的稿子，页面和列表这一级要改成文档流（见 fidelity.md 的「生产化调整」）。
-- **画板识别**：一个 SECTION 可能就是一屏（子节点是导航栏、列表、tab 栏等部件），也可能是一组屏幕。按尺寸和内容判断，SECTION 名常常就是状态名（如「约会-上拉加载失败」）。
+- **画板识别**：屏幕大小的 SECTION 就是一屏（outline 已按屏列出）。帧名常常就是状态名（如「约会-上拉加载失败」），outline 会把同前缀的帧归成一组。`titles:` 是画布上的分区标题，`notes (requirements):` 才是设计师写的需求注释。
+- **实现范围**：
+  - 只实现链接指向的设计。整页链接里如果有多套方案（不同尺寸的卡片流、另一版页面），以分区标题下面成组的那套为准，其余的在汇报里列出，不要都做。
+  - 规则说明帧（如「8个字以上 小字号」「4个字以内 大字号」）是逻辑规格，落成代码里的规则，不是独立组件。
+  - 宿主环境的外观（手机状态栏 9:41、微信胶囊、浏览器地址栏、Home Indicator）不属于页面，不写进页面组件；需要展示时放在预览外壳里。
 
 ### 4. 实现（自底向上）
 
 1. **token**：写进项目已有的主题或变量文件，没有就新建 CSS 变量文件。
-2. **组件**：`node MB show <ast> Cn` 每个只读一次，然后写组件。props 来自 `params`，按内容起名，不用 `text1` 这类名字；`variants` 对应 variant 或布尔 props；`slotN` 对应 children 或具名插槽。
-3. **页面**：先选一个最完整的状态作为基准，`node MB show <ast> <单元id> --depth 4` 浏览，`node MB show <ast> <路径>` 下钻局部；其他状态用 `node MB diff <ast> <基准> <状态>` 只看差异。
-4. **交互**：连线、注释、状态差异落成事件、状态和路由（见下文）。
-5. 写完一个文件就继续下一个，不回读刚写的文件。
+2. **组件**：`node MB show <ast> C16 --expand` 一次看到组件和它内部的子组件；几个相关组件用 `node MB show <ast> C2 C3 C9` 一起读，样式块只输出一次。写组件时，props 来自 `params`，按内容起名，不用 `text1` 这类名字；`variants` 对应 variant 或布尔 props；`slotN` 对应 children 或具名插槽。
+3. **页面**：先选一个最完整的状态作为基准，`node MB show <ast> <单元id> --depth 4` 浏览，`node MB show <ast> <路径>` 下钻局部；同组的其他状态用 `node MB diff <ast> <基准> <状态>` 只看差异，不要整屏重读。
+4. **图片**：`assets` 标出的 `shape-*.svg`（纯色矩形或圆角矩形，例如按钮底、卡片白底、边框、标签底）改用 CSS 实现，这样 hover、disabled、选中等状态才能改颜色，用不到的文件就删掉。真正的图标、插画、照片照常引用。
+5. **交互**：连线、注释、状态差异落成事件、状态和路由（见下文）。
+6. 写完一个文件就继续下一个，不回读刚写的文件。
 
 ### 5. 验证
 
 - 运行项目自己的 typecheck / lint / build，修到全部通过。
-- `node MB check <ast> src --unit <单元id>`：检查文案和图片是否都已落进代码。缺失项逐条判断：是漏写还是有意数据化。
-- 有浏览器工具且起了 dev server 时，每个界面截一张图粗看布局；不要反复截图微调。
+- `node MB check <ast> src --unit <单元id>`：检查文案和图片是否都已落进代码。缺失项逐条判断：拼接出来的文案（`292人已报名`）、CSS 截断的文案、改用 CSS 的形状图都属于正常情况。
+- 删掉资源目录里没有被引用的图片。
+- 有浏览器工具时，起 dev server，每个界面和主要状态各截一张图，和设计意图对照粗看布局；有明显错位就修，不要反复截图微调像素。
 
 ## 状态合并（核心）
 
 设计稿习惯把一个界面画成多帧：默认、hover、选中、展开、空态、加载、报错、弹窗、步骤 1/2/3。**它们是同一份代码的不同状态，不能生成多个页面。**
 
-**识别信号**：outline 里的 `≈gN` 分组和 `~` 相似提示；同一个 `Sn` 外壳；帧名带 hover、选中、空、loading、error、展开、step；连线（`点击X → 某帧`）；画布上的设计师注释（outline 的 `notes:`，如「hover 时…」「点击后…」）。注释就是需求，要实现。
+**识别信号**：
+- outline 里的 `≈gN` 分组（同前缀的帧名、结构相似、同一个 `Sn` 外壳）和 `~` 相似提示；
+- 帧名带 hover、选中、空、骨架、loading、加载中、失败、到底、刷新、展开、step；
+- 连线（`点击X → 某帧`）；
+- 设计师注释（outline 的 `notes (requirements):`，如「hover 时…」「点击后…」）。注释就是需求，要实现。
+
+**预览**：所有状态都要能在浏览器里看到，但不能做成多个页面。做法是让 mock 数据层根据 URL 参数返回对应场景（如 `?mock=empty`），页面代码本身不知道自己处在预览中。
 
 **diff 结果的翻译**：
 

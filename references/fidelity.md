@@ -15,6 +15,7 @@
 | `locationRelativeToParent` / `inset` | `position:absolute; left; top` / `inset:0`，坐标相对父节点外边缘 |
 | `margin*` | 直译，包括 `auto` |
 | `overflow` | `hidden` 只裁剪不滚动；`x-auto` 表示 `overflow-x:auto`，另一个轴按 hidden 处理 |
+| `clipPath` | 照写成 `clip-path`（来自蒙版；路径是固定 px，容器尺寸要随内容变时，能看出是圆角矩形就改用 `border-radius` + `overflow:hidden`） |
 | `scrollTop` / `scrollLeft`（节点上） | 渲染后用 JS 设置初始滚动位置，不要用负 top 模拟 |
 | `zIndex:-1` + 父节点 `isolation:isolate` | 背景层沉底，两个字段必须配对写 |
 | `pointerEvents:none` | 装饰层不拦截点击 |
@@ -24,7 +25,7 @@
 
 **生产化调整**（只改尺寸策略，不改视觉）：
 
-- **倍率**：移动端稿根宽 750 / 828 / 1125 是 2x / 2x / 3x 稿，所有数值（尺寸、字号、间距、圆角、描边、阴影）统一换算成 CSS px（÷2 或 ÷3）；项目有 rem / vw 适配方案时按项目方案换算。375 / 390 / 414 宽是 1x，不换算。
+- **倍率**：移动端稿屏宽 750 / 828 / 1125 是 2x / 2x / 3x 稿，所有数值（尺寸、字号、间距、圆角、描边、阴影）统一换算成 CSS px（÷2 或 ÷3）；项目有 rem / vw 适配方案时按项目方案换算。375 / 390 / 414 宽是 1x，不换算。**倍率按每一屏各自判断**，同一个文件里可能混着 1x 帧和 2x 帧。
 - 页面根节点的固定宽度改为 `width:100%` + `max-width`，或跟随项目的布局容器；`fill` 的部分自然自适应；组件内部的固定尺寸保持不变。
 - **绝对定位转文档流**：Sketch 或手摆的稿子常常整页都是 `mode:none` 加坐标。页面和列表这一级，等距排列的同类元素（卡片、列表行、tab）改成 flex 加 gap（gap 取相邻坐标差减去尺寸），顶部栏和底部栏用 sticky 或 fixed；小组件内部的元素可以保留绝对定位。判断标准是内容变长、数据条数变化时布局不能坏。
 
@@ -38,9 +39,13 @@
 - 多层填充时，**颜色不能写在非最后一层**，否则整条声明失效：最底层的纯色放 `background-color`，其他层用 `linear-gradient(c,c)` 写进 `background-image`。
 - TEXT 节点的颜色只取 `fontStyle.color`。
 
+`maskFills`（节点上）：与 fills 同格式的 fill 样式引用，落成 `mask-image` / `mask-size` / `mask-position` / `mask-repeat`，作用于整个容器。
+
 ## fontStyle
 
 `family`、`weight`、`size`、`lineHeight`、`letterSpacing`、`textCase`（text-transform）、`textAlign`、`textDecoration`、`color` 直译。
+
+- 字体：设计稿用了项目里没有的字体（如商用付费字体）时，写 `font-family` 加上合理的回退字体，并在汇报里说明，不要擅自下载或引入字体文件。
 
 - `textWrap`：`nowrap` → `white-space:nowrap`；`wrap` 按宽度换行；`truncate` → nowrap + hidden + ellipsis；`clamp` → `-webkit-line-clamp:maxLines` 三件套。
 - 渐变文字：`backgroundClip:text` + `webkitTextFillColor:transparent` + `background` 三个一起写。
@@ -63,9 +68,14 @@
 
 描边和 `effects.boxShadow` 都落在 box-shadow 上时，**合并成一条声明**（描边在前），否则后写的会覆盖前写的。伪元素画法的描边除外。描边线条某个轴为 0 时，那个轴是厚度轴，厚度取 strokeWeight。
 
+**TEXT 节点上的描边**（文字描边，不是盒子描边）：`-webkit-text-stroke: <w> <c>`。OUTSIDE 描边写成 2 倍宽度，再加 `paint-order: stroke fill`，让描边只露在外侧；INSIDE 和 CENTER 直接写原宽度。
+
 ## effects
 
-`boxShadow`、`textShadow`、`filter`、`backdropFilter` 直译。
+`boxShadow`、`filter`、`backdropFilter` 直译。
+
+- `textShadow` 只接受 3 个长度值。如果给了 4 个（第 4 个是 spread），去掉第 4 个，否则整条声明无效。
+- 设计师用一层「错位的同文字图层」来模拟阴影（同文本、同字体，只是位置偏移，常叫「投影」）时，合并成主文字的 `text-shadow`，不要渲染成两份文字。
 
 ## 旋转与镜像
 
