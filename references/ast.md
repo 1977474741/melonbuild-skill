@@ -8,13 +8,13 @@
 
 | tag | 含义 / 落点 |
 |---|---|
-| FRAME / GROUP / INSTANCE / COMPONENT | 容器。没有名字的 FRAME 是从编组坐标推断出的行或列，照 layout 写成 div |
+| FRAME / GROUP / INSTANCE / COMPONENT | 容器。没有名字的 FRAME 是纯布局的行或列，照 layout 写成 div |
 | SECTION | 画板。大画板的子节点是一个个相互独立的界面；屏幕大小的 SECTION 本身就是一屏，子节点是这一屏的部件（导航栏、列表、tab 栏） |
 | TEXT | 文本，内容在 `text` |
 | RECTANGLE / ELLIPSE / LINE | 用 CSS 画的形状或装饰层 |
-| IMAGE-SVG | 整张导出的图片叶子，用 `<img src>`；纯矢量是 SVG，含照片的整组（照片 + 蒙版 + 遮罩）是 PNG。它不带 fills、strokes、effects、opacity、圆角；不要给它额外套包裹层，但 AST 里本来就有的外层盒子要保留。`mb assets` 标出的纯色形状改用 CSS 实现 |
+| IMAGE-SVG | 整张导出的图片叶子，用 `<img src>`。它不带 fills、strokes、effects、opacity、圆角；不要给它额外套包裹层，但 AST 里本来就有的外层盒子要保留。显示尺寸一律取节点的 `width` / `height`：图片文件按导出倍率渲染，像素尺寸是它的整数倍（2 倍稿里 375×64 的节点，文件是 750×128），不能拿文件尺寸推断它占多宽 |
 | IMAGE-BG | 旋转、裁切或模糊过的背景图：外层容器 absolute + `pointer-events:none`，内部的 `<img>` 子节点承载 src，其 layout 字段原样照抄 |
-| MASK | 少见。蒙版组要么整组导出成一张图，要么改写成容器上的裁剪（见下方「蒙版」）；残留的 MASK 是裁剪原语（`path` 用于 clip-path），不是图片 |
+| MASK | 少见。裁剪原语（`path` 用于 clip-path），不是图片 |
 
 **节点上的内联属性**（实例级）：`width`、`height`、`borderRadius`、`inset`、`locationRelativeToParent{x,y}`（absolute 定位的 left/top）、`marginLeft` / `marginTop` / `marginRight` / `marginBottom`（流里的位置：不等的间距、偏移，照写成 margin）、`opacity`、`rotate`、`matrix`、`strokeFit`、`scrollTop`/`scrollLeft`、`src`、`canvasXY`（画布坐标，只用于排布画板）。
 
@@ -37,7 +37,7 @@
 
 ## 蒙版
 
-只由画图图层（照片、蒙版、遮罩色块、装饰矢量）组成的蒙版组，整组导出成一张图（`IMAGE-SVG`，含照片时 `src` 是 PNG）。组里还有文字或独立组件时才拆开：被蒙版裁剪的图层是容器的子节点，裁剪写在容器上：`overflow:hidden` + `borderRadius`，或 layout 的 `clipPath`（照写成 `clip-path`），或节点上的 `maskFills`（引用 fill 样式，落成 `mask-image/size/position/repeat`）。子节点照常还原，照片仍是独立图片。
+被蒙版裁剪的内容是容器的子节点，裁剪写在容器上：`overflow:hidden` + `borderRadius`，或 layout 的 `clipPath`（照写成 `clip-path`），或节点上的 `maskFills`（引用 fill 样式，落成 `mask-image/size/position/repeat`）。
 
 ## 连线 `connectors`
 

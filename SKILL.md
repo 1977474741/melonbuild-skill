@@ -37,7 +37,7 @@ melonbuild node-ast "<Figma链接>" --reuse components -q -o .melonbuild/<模块
 
 - `--reuse components` 最贴近真实组件：`Cn` 是组件候选，`Sn` 是屏幕外壳，参数、变体、插槽都已抽好。
 - 多页、整个画板时拉**一次全量**，不要逐页拉：跨页复用的组件只有在同一份 AST 里才能识别出来。
-- 含照片的整组图片按 PNG 导出，倍率默认 `--image-scale auto`（2x/3x 移动端稿取 1，其余取 2），一般不用改；需要更高清时显式传 `2`。
+- 照片需要更高清时加 `--image-scale 2`。
 - 退出码：3 表示额度或体积超限，告诉用户原因和订阅链接；429 限流时把 CLI 给出的原因原样转告用户。
 - 建议把 `.melonbuild/` 加进 `.gitignore`。
 
@@ -48,7 +48,7 @@ node MB outline .melonbuild/<模块名>.remote.json   # 分区、状态组与基
 node MB tokens  .melonbuild/<模块名>.remote.json   # 颜色 / 字体 / 圆角 / 间距 / 阴影，开头会提示倍率
 ```
 
-outline 已经替你做好了这些判断，**直接照用，不要再自己推断**：
+outline 先把这些归纳好了，用它来规划：
 
 | outline 里的 | 意思 | 怎么用 |
 |---|---|---|
@@ -56,7 +56,7 @@ outline 已经替你做好了这些判断，**直接照用，不要再自己推�
 | `REGION ⚠ 不在任何分区里` | 旧稿、备选方案、附件 | 默认不实现，在汇报里列出 |
 | `state groups` 的 `base=` | 同一界面的不同状态，以及写代码时的基准帧 | 先 show 基准帧，再处理其它帧 |
 | `diff 对比:` / `单独 show:` | 和基准结构相近 / 差异大 | 前者 `diff <base> <id>`，后者单独 `show` |
-| `same name, drawn differently` | 同一个组件被画成了好几版 | 以 `base=` 那版为准；其它版用 `diff <base> <other>` 看差异，决定做成 variant 还是忽略 |
+| `same name, drawn differently` | 同一个组件被画成了好几版 | 每一版都用 `diff <base> <other>` 看差异，决定做成 variant 还是忽略，忽略的在汇报里说明 |
 | `host chrome` | 状态栏、小程序胶囊等运行环境外观 | 不写进页面组件（需要时放在预览外壳里） |
 | `notes (requirements)` | 设计师写的需求注释 | 当作需求实现 |
 | `small parts` 里的规则说明帧（如「8个字以上 小字号」） | 逻辑规格 | 落成代码里的规则，不是独立组件 |
@@ -65,7 +65,7 @@ outline 已经替你做好了这些判断，**直接照用，不要再自己推�
 
 - **组件**：按 outline 的组件排行给 `Cn` 起语义化名称；`same skeleton` 里的几个模板合并成一个组件加 variant；能用项目已有组件或组件库的直接用。
 - **token**：用到两次及以上的值进 token，只出现一次的直接写字面值；按 tokens 开头的提示换算倍率。
-- **尺寸策略**：整页绝对定位的稿子，页面和列表这一级改成文档流（见 fidelity.md 的「生产化调整」）。
+- **尺寸策略**：页面宽度和页面这一级的文档流，见 fidelity.md 的「生产化调整」。
 
 **下载图片**：范围一定就下，之后所有 `show` / `diff` 都在本地 AST 上做，图片显示为文件名，可以直接 import。
 
@@ -73,7 +73,6 @@ outline 已经替你做好了这些判断，**直接照用，不要再自己推�
 node MB subset .melonbuild/<模块名>.remote.json <要实现的单元id…> -o .melonbuild/<模块名>.scope.json
 melonbuild download-images .melonbuild/<模块名>.scope.json -q \
   --image-dir <项目资源目录>/<模块名> --output .melonbuild/<模块名>.json
-node MB assets .melonbuild/<模块名>.json      # 列出可以改用 CSS 画的纯色 / 渐变形状
 ```
 
 - 图片按 Figma 图层命名，内容相同的只存一份。`show` 只显示文件名，文件都在 `--image-dir` 目录里；写 import 时用项目别名或相对组件文件的路径（如 `@/assets/dating/icon-定位-3637b8db.svg`）。
@@ -84,15 +83,14 @@ node MB assets .melonbuild/<模块名>.json      # 列出可以改用 CSS 画的
 1. **token**：写进项目已有的主题或变量文件，没有就新建 CSS 变量文件。
 2. **组件**：`node MB show <ast> C16 --expand` 一次看到组件和它内部的子组件；几个相关组件用 `node MB show <ast> C2 C3 C9` 一起读，样式块只输出一次。写组件时，props 来自 `params`，按内容起名，不用 `text1` 这类名字；`variants` 对应 variant 或布尔 props；`slotN` 对应 children 或具名插槽。
 3. **页面**：先选一个最完整的状态作为基准，`node MB show <ast> <单元id> --depth 4` 浏览，`node MB show <ast> <路径>` 下钻局部；同组的其他状态用 `node MB diff <ast> <基准> <状态>` 只看差异，不要整屏重读。
-4. **图片**：`assets` 标出的纯色形状（纯色矩形或圆角矩形，例如按钮底、卡片白底、边框、标签底）改用 CSS 实现，这样 hover、disabled、选中等状态才能改颜色，用不到的文件就删掉。真正的图标、插画、照片照常引用。
-5. **交互**：连线、注释、状态差异落成事件、状态和路由（见下文）。
-6. 写完一个文件就继续下一个，不回读刚写的文件。
+4. **交互**：连线、注释、状态差异落成事件、状态和路由（见下文）。
+5. 写完一个文件就继续下一个，不回读刚写的文件。
 
 ### 5. 验证
 
 - 运行项目自己的 typecheck / lint / build，修到全部通过。
-- `node MB check <ast> src --unit <单元id>`：检查文案和图片是否都已落进代码。缺失项逐条判断：拼接出来的文案（`292人已报名`）、CSS 截断的文案、改用 CSS 的形状图都属于正常情况。
-- `node MB prune .melonbuild/<模块名>.json src --apply`：删掉资源目录里代码没引用的图片（改用 CSS 的形状、没实现的状态）。
+- `node MB check <ast> src --unit <单元id>`：检查文案和图片是否都已落进代码。缺失项逐条判断：拼接出来的文案（`292人已报名`）、CSS 截断的文案都属于正常情况。
+- `node MB prune .melonbuild/<模块名>.json src --apply`：删掉资源目录里代码没引用的图片（没实现的状态）。
 - 有浏览器工具时，起 dev server，每个界面和主要状态各截一张图，和设计意图对照粗看布局；有明显错位就修，不要反复截图微调像素。
 
 ## 状态合并（核心）
@@ -121,7 +119,7 @@ node MB assets .melonbuild/<模块名>.json      # 列出可以改用 CSS 画的
 
 - 交互态（hover、pressed、focus）用纯 CSS，不用 JS。
 - UI 态（开合、选中、tab、步骤）用组件 state 或受控 props。
-- 数据态（loading、empty、error、success）用 `status` 联合类型。
+- 数据态（loading、empty、error、success）用 `status` 联合类型。骨架屏只用于首屏；切换 tab 或筛选、下拉刷新、翻页只替换受影响的区域，已经显示的导航和筛选不退回骨架。
 - 列表、计数、文案来自数据。
 
 ## 组件封装

@@ -15,7 +15,7 @@
 | `locationRelativeToParent` / `inset` | `position:absolute; left; top` / `inset:0`，坐标相对父节点外边缘 |
 | `margin*` | 直译。`auto` 在 layout 里；具体数值写在节点上（同坐标一样是实例级） |
 | `overflow` | `hidden` 只裁剪不滚动；`x-auto` 表示 `overflow-x:auto`，另一个轴按 hidden 处理 |
-| `clipPath` | 照写成 `clip-path`（来自蒙版；路径是固定 px，容器尺寸要随内容变时，能看出是圆角矩形就改用 `border-radius` + `overflow:hidden`） |
+| `clipPath` | 照写成 `clip-path`；节点上同时有 `borderRadius` 时两个都写，裁剪叠加生效 |
 | `scrollTop` / `scrollLeft`（节点上） | 渲染后用 JS 设置初始滚动位置，不要用负 top 模拟 |
 | `zIndex:-1` + 父节点 `isolation:isolate` | 背景层沉底，两个字段必须配对写 |
 | `pointerEvents:none` | 装饰层不拦截点击 |
@@ -26,9 +26,9 @@
 **生产化调整**（只改尺寸策略，不改视觉）：
 
 - **倍率**：移动端稿屏宽 750 / 828 / 1125 是 2x / 2x / 3x 稿，所有数值（尺寸、字号、间距、圆角、描边、阴影）统一换算成 CSS px（÷2 或 ÷3）；项目有 rem / vw 适配方案时按项目方案换算。375 / 390 / 414 宽是 1x，不换算。**倍率按每一屏各自判断**，同一个文件里可能混着 1x 帧和 2x 帧。
-- 页面根节点的固定宽度改为 `width:100%` + `max-width`，或跟随项目的布局容器；`fill` 的部分自然自适应；组件内部的固定尺寸保持不变。和容器同框、垫在内容下面的装饰图，AST 里已经是该容器 fills 里的 `backgroundImage`（纯矢量的 `100% 100%` 铺满，含照片的 `cover`），照写成背景即可；`100% 100%` 的图是 SVG 时，在文件的 `<svg>` 上加 `preserveAspectRatio="none"`，否则它会保持自身比例、两边留白。
+- 页面根节点的固定宽度改为 `width:100%` + `max-width`（取设计稿的逻辑宽度：750 宽的 2x 稿是 375px），或跟随项目的布局容器；`fill` 的部分自然自适应；组件内部的固定尺寸保持不变。
 - **吸顶 / 固定层要不透明**：把头部、tab 栏、底栏改成 `sticky` / `fixed` 后，列表会滚到它们下面，这是设计稿里没有的重叠。设计稿里这些层叠在页面底色上，可能只是一张半透明的渐变图或一层半透明色；改成吸顶后必须把原来垫在下面的底色一起写上（如 `background: url(头部背景.png) …, var(--页面底色)`），否则滚动内容会从透明处透出来。
-- **绝对定位转文档流**：Sketch 或手摆的稿子常常整页都是 `mode:none` 加坐标。页面和列表这一级，等距排列的同类元素（卡片、列表行、tab）改成 flex 加 gap（gap 取相邻坐标差减去尺寸），顶部栏和底部栏用 sticky 或 fixed；小组件内部的元素可以保留绝对定位。判断标准是内容变长、数据条数变化时布局不能坏。
+- **页面这一级的绝对定位转文档流**：屏幕根节点下按坐标摆放的区块，从上到下改成文档流，重复的卡片、列表行用数组 `.map` 加 gap（取相邻坐标差减去尺寸），顶部栏和底部栏用 sticky 或 fixed。判断标准是内容变长、数据条数变化时布局不能坏。
 
 ## fills
 
@@ -36,7 +36,7 @@
 
 - 颜色串逐字照抄，包括 alpha，不要凭观感改成实色。
 - `{gradient}` 原样写，不要修改角度。
-- `{backgroundImage, backgroundSize, backgroundPosition, backgroundRepeat}` 四个字段照抄；图片填充始终走 background，不要改成 `<img>`。如果带 `opacity`，那只是这层图片的透明度，需要单独的伪元素承载。
+- `{backgroundImage, backgroundSize, backgroundPosition, backgroundRepeat}` 四个字段照抄成背景。内容图（随数据变化、要有 alt 或加载失败态）改用 `<img>` 时，`backgroundSize` / `backgroundPosition` 换成 `object-fit` / `object-position`（`cover` → `object-fit: cover`），否则图片会被拉伸变形。`backgroundSize` 是 `100% 100%` 且图片是 SVG 时，在文件的 `<svg>` 上加 `preserveAspectRatio="none"`，否则它会保持自身比例、两边留白。如果带 `opacity`，那只是这层图片的透明度，需要单独的伪元素承载。
 - 多层填充时，**颜色不能写在非最后一层**，否则整条声明失效：最底层的纯色放 `background-color`，其他层用 `linear-gradient(c,c)` 写进 `background-image`。
 - TEXT 节点的颜色只取 `fontStyle.color`。
 
