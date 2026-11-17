@@ -8,7 +8,7 @@
 
 | tag | 含义 / 落点 |
 |---|---|
-| FRAME / GROUP / INSTANCE / COMPONENT | 容器 |
+| FRAME / GROUP / INSTANCE / COMPONENT | 容器。没有名字的 FRAME 是从编组坐标推断出的行或列，照 layout 写成 div |
 | SECTION | 画板。大画板的子节点是一个个相互独立的界面；屏幕大小的 SECTION 本身就是一屏，子节点是这一屏的部件（导航栏、列表、tab 栏） |
 | TEXT | 文本，内容在 `text` |
 | RECTANGLE / ELLIPSE / LINE | 用 CSS 画的形状或装饰层 |
@@ -16,7 +16,7 @@
 | IMAGE-BG | 旋转、裁切或模糊过的背景图：外层容器 absolute + `pointer-events:none`，内部的 `<img>` 子节点承载 src，其 layout 字段原样照抄 |
 | MASK | 少见。蒙版组要么整组导出成一张图，要么改写成容器上的裁剪（见下方「蒙版」）；残留的 MASK 是裁剪原语（`path` 用于 clip-path），不是图片 |
 
-**节点上的内联属性**（实例级）：`width`、`height`、`borderRadius`、`inset`、`locationRelativeToParent{x,y}`（absolute 定位的 left/top）、`opacity`、`rotate`、`matrix`、`strokeFit`、`scrollTop`/`scrollLeft`、`src`、`canvasXY`（画布坐标，只用于排布画板）。
+**节点上的内联属性**（实例级）：`width`、`height`、`borderRadius`、`inset`、`locationRelativeToParent{x,y}`（absolute 定位的 left/top）、`marginLeft` / `marginTop` / `marginRight` / `marginBottom`（流里的位置：不等的间距、偏移，照写成 margin）、`opacity`、`rotate`、`matrix`、`strokeFit`、`scrollTop`/`scrollLeft`、`src`、`canvasXY`（画布坐标，只用于排布画板）。
 
 **`opacity:0` 的节点**是占位盒子（常叫 Spacing），要保留，不要改写成 margin。
 
