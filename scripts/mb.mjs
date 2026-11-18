@@ -256,7 +256,7 @@ function canvasRegions(board,screens){
   return u=>{
     const p=xy(u);if(!p)return {region:null,row:null};
     const back=backs.filter(b=>inside(p,b)).sort((a,b)=>a.w*a.h-b.w*b.h)[0];
-    if(backs.length&&!back)return {region:'⚠ 不在任何分区里（多半是旧稿/备选方案/附件，默认不实现）',row:null};
+    if(backs.length&&!back)return {region:'⚠ 不在任何分区里（可能是旧稿、备选方案或附件，列给用户确认是否需要）',row:null};
     const own=titles.filter(t=>!back||inside(t,back));
     const head=[...own].sort((a,b)=>b.size-a.size||a.y-b.y)[0];
     const above=own.filter(t=>t!==head&&t.y<=p.y).sort((a,b)=>b.y-a.y||Math.abs(a.x-p.x)-Math.abs(b.x-p.x))[0];
@@ -366,7 +366,7 @@ function outline(){
   const scan=n=>{if(!n||typeof n!=='object')return;if(isRef(n)){kids0(n).forEach(scan);return;}
     if(n.name&&HOST.test(n.name))hostNodes.set(n.name,(hostNodes.get(n.name)||0)+1);else kids0(n).forEach(scan);};
   ast.nodes.forEach(scan);for(const [k,t] of Object.entries(T))if(!host.has(k))scan(t.body);
-  if(host.size||hostNodes.size)console.log('\nhost chrome (运行环境的外观，不写进页面组件；check 会忽略模板里的文案): '+
+  if(host.size||hostNodes.size)console.log('\nhost chrome (运行环境的外观：照设计稿实现，单独封装成宿主外观组件、和页面内容分开；check 会忽略模板里的文案): '+
     [...[...host].map(([k,n])=>`${k} "${short(n,24)}"`),...[...hostNodes].map(([n,c])=>`"${short(n,24)}"${c>1?'×'+c:''}`)].join(', '));
 
   // components: rank by uses × size, the reuse value
@@ -390,7 +390,7 @@ function outline(){
     for(const {k,t,n} of comps){const nm=String(t.body?.name??'');if(!nm||AUTO.test(nm)||n<8||host.has(k))continue;if(!byName.has(nm))byName.set(nm,[]);byName.get(nm).push({k,uses:t.uses??1});}
     const variants=[...byName].filter(([,v])=>v.length>1);
     if(variants.length){
-      console.log('\nsame name, drawn differently (one component; base = most used; diff <base> <other> to see what differs):');
+      console.log('\nsame name, drawn differently (one component drawn several ways; implement every version as a variant; diff <base> <other> to see what differs):');
       for(const [nm,v] of variants){v.sort((a,b)=>b.uses-a.uses);console.log(`  "${short(nm,20)}": base=${v[0].k}×${v[0].uses}  others: ${v.slice(1).map(x=>x.k+'×'+x.uses).join(' ')}`);}
     }
   }
@@ -427,6 +427,22 @@ function tokens(){
 }
 
 // ---------- diff ----------
+// 模板参数作用在哪个图层上：参数名 → 「图层名 字段」，diff 里标出来，下游不用再去翻模板
+const whereMemo=new Map();
+function paramWhere(name){
+  if(whereMemo.has(name))return whereMemo.get(name);
+  const out={};
+  whereMemo.set(name,out); // 先占位，防止模板互相引用时死循环
+  walk([T[name]?.body].filter(Boolean),n=>{
+    for(const [k,v] of Object.entries(n))if(v&&typeof v==='object'&&typeof v.$param==='string'&&!out[v.$param])
+      out[v.$param]=(n.name&&!AUTO.test(n.name)?n.name:n.tag)+' '+(k==='text'?'文字':k);
+    // 参数继续传给内层模板：跟到内层，标出最终作用的图层
+    if(isRef(n))for(const [ak,av] of Object.entries(n.args||{}))if(av&&typeof av==='object'&&typeof av.$param==='string'&&!out[av.$param]){
+      const inner=paramWhere(n.t)[ak];out[av.$param]=inner||(T[n.t]?.body?.name||n.t)+' '+ak;
+    }
+  });
+  whereMemo.set(name,out);return out;
+}
 function diff(aSpec,bSpec){
   const A=locate(aSpec),B=locate(bSpec);let out=[],limit=250;
   const key=n=>isRef(n)?(/^T/.test(n.t)&&!kids(n).length?T[n.t]?.body?.tag??'@'+n.t:'@'+n.t):n.tag;
@@ -441,6 +457,18 @@ function diff(aSpec,bSpec){
     const ka=new Set(Object.keys(a)),kb=new Set(Object.keys(b));
     for(const k of new Set([...ka,...kb])){
       if(['children','id','canvasXY'].includes(k))continue;
+      if(k==='args'&&isRef(a)&&isRef(b)&&a.t===b.t){
+        // 同一模板的两个实例：比最终生效的值（参数默认值 → 变体 → 实例参数），不比实例上写了什么，
+        // 否则「→ ∅」（回到默认值）、「variant → v2」都看不出实际变成了什么
+        const ea=envOf(a),eb=envOf(b),where=paramWhere(a.t);
+        if((a.args?.variant)!==(b.args?.variant))emit(`~ ${path} variant: ${a.args?.variant??'默认'} → ${b.args?.variant??'默认'}`);
+        for(const q of new Set([...Object.keys(ea),...Object.keys(eb)])){
+          if(q==='variant'||same(ea[q],eb[q]))continue;
+          const v=x=>x===undefined||x===null?'∅':short(val(x),60);
+          emit(`~ ${path} ${q}${where[q]?' ('+where[q]+')':''}: ${v(ea[q])} → ${v(eb[q])}`);
+        }
+        continue;
+      }
       if(k==='args'||k==='params'){const x=a[k]||{},y=b[k]||{};for(const q of new Set([...Object.keys(x),...Object.keys(y)]))if(!same(x[q],y[q]))emit(`~ ${path} ${k}.${q}: ${x[q]===undefined?'∅':short(val(x[q]),60)} → ${y[q]===undefined?'∅':short(val(y[q]),60)}`);continue;}
       if(!same(a[k],b[k]))emit(`~ ${path} ${k}: ${a[k]===undefined?'∅':short(val(a[k]),70)} → ${b[k]===undefined?'∅':short(val(b[k]),70)}`);
     }
@@ -667,7 +695,9 @@ function prune(dirs,apply){
     if(s.isDirectory()){if(/^(node_modules|\.git|dist|build|\.next|\.melonbuild)$/.test(basename(p)))return;for(const f of readdirSync(p))rd(join(p,f));}
     else if(exts.has(extname(p))&&s.size<2e6)code+=readFileSync(p,'utf8')+'\n';};
   for(const d of dirs.length?dirs:['.'])rd(d);
-  const files=readdirSync(dir).filter(f=>/\.(svg|png|jpe?g|webp|gif)$/i.test(f));
+  // 只动这份 AST 下载的图片：资源目录里用户原有的文件（别的模块、手放的图）一律不碰
+  const ours=new Set(localImageRefs().map(r=>r.file));
+  const files=readdirSync(dir).filter(f=>/\.(svg|png|jpe?g|webp|gif)$/i.test(f)&&ours.has(f));
   const unused=files.filter(f=>!code.includes(f)&&!code.includes(encodeURI(f)));
   const bytes=unused.reduce((s,f)=>s+statSync(join(dir,f)).size,0);
   console.log(`${files.length-unused.length}/${files.length} images referenced by code; ${unused.length} unused (${(bytes/1e6).toFixed(1)}MB) in ${dir}`);
