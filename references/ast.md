@@ -16,7 +16,7 @@
 | IMAGE-BG | 旋转、裁切或模糊过的背景图：外层容器 absolute + `pointer-events:none`，内部的 `<img>` 子节点承载 src，其 layout 字段原样照抄 |
 | MASK | 少见。裁剪原语（`path` 用于 clip-path），不是图片 |
 
-**节点上的内联属性**（实例级）：`width`、`height`、`borderRadius`、`inset`、`locationRelativeToParent{x,y}`（absolute 定位的 left/top）、`marginLeft` / `marginTop` / `marginRight` / `marginBottom`（流里的位置：不等的间距、偏移，照写成 margin）、`opacity`、`rotate`、`matrix`、`strokeFit`、`scrollTop`/`scrollLeft`、`src`、`canvasXY`（画布坐标，只用于排布画板）。
+**节点上的内联属性**（实例级）：`width`、`height`、`borderRadius`、`inset`、`locationRelativeToParent{x,y}`（absolute 定位的 left/top）、`marginLeft` / `marginTop` / `marginRight` / `marginBottom`（流里的位置：不等的间距、偏移，照写成 margin）、`opacity`、`rotate`、`matrix`、`strokeFit`、`scrollTop`/`scrollLeft`、`src`、`canvasXY`（画布坐标，只用于排布画板；节点本身是内容撑开、没有 width/height 时，这里会带上设计稿上的宽高，供判断屏宽参考）。
 
 **`opacity:0` 的节点**是占位盒子（常叫 Spacing），要保留，不要改写成 margin。
 

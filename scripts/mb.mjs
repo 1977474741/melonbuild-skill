@@ -24,7 +24,8 @@ const USAGE=`mb.mjs <command> <ast.json> [args]
 path = <id or template>/<childIndex>/... e.g. 12:34/0/2`;
 
 const [cmd,file,...rest]=process.argv.slice(2);
-if(!cmd||!file||cmd==='-h'||cmd==='--help'){console.log(USAGE);process.exit(cmd?0:1);}
+const wantsHelp=[cmd,file,...rest].some(a=>a==='-h'||a==='--help');
+if(!cmd||!file||wantsHelp){console.log(USAGE);process.exit(cmd?0:1);}
 const ast=JSON.parse(readFileSync(file,'utf8'));
 const T=ast.templates||{},G=ast.globalStyles||{};
 const opt=(name,def)=>{const i=rest.indexOf(name);if(i<0)return def;const v=rest[i+1];rest.splice(i,2);return v;};
@@ -135,9 +136,13 @@ function show(targets,maxDepth,expand){
       }
       if(n.__slots)env={...env,__slots:n.__slots};
       for(const k of Object.keys(n))note(bind(n[k],env));
-      const head=(n.tag||'?')+(n.id!==undefined?' #'+n.id:'')+(n.name&&!AUTO.test(n.name)?' "'+short(n.name,40)+'"':'');
+      // TEXT 的图层名多半是内容的旧副本（实例改过文字、图层名还是主组件里的），只会误导；有内容就只给内容
+      const named=n.name&&!AUTO.test(n.name)&&!(n.tag==='TEXT'&&n.text!==undefined);
+      const head=(n.tag||'?')+(n.id!==undefined?' #'+n.id:'')+(named?' "'+short(n.name,40)+'"':'');
       const tv=bind(n.text,env);
-      const text=n.text!==undefined?'  ⟨'+(tv&&typeof tv==='object'?val(tv):short(tv??'∅',120))+'⟩':'';
+      // 文案原样完整给出（换行写成 \n）：要逐字写进代码，截断只会写错或逼着再查一次
+      const fullText=t=>String(t).replace(/\r?\n|\u2028/g,'\\n');
+      const text=n.text!==undefined?'  ⟨'+(tv&&typeof tv==='object'?val(tv):fullText(tv??'∅'))+'⟩':'';
       const a=attrLine(Object.fromEntries(Object.entries(n).filter(([k])=>k!=='__slots')),env);
       lines.push(pad+head+(a?' '+a:'')+text);
       const c=kids(n);
@@ -179,7 +184,7 @@ function units(){
   (function rec(list,group){
     for(const n of list){
       // a SECTION about the size of a screen is one screen made of parts, not a board of screens
-      if(!isRef(n)&&n.tag==='SECTION'&&group&&n.width&&n.width<=2000&&n.height<=6000){out.push({unit:n,group});continue;}
+      if(!isRef(n)&&n.tag==='SECTION'&&group&&dim(n).width&&dim(n).width<=2000&&dim(n).height<=6000){out.push({unit:n,group});continue;}
       if(!isRef(n)&&(n.tag==='SECTION'||n.tag==='CANVAS')){out.push({section:n,group});rec(kids(n),n);continue;}
       out.push({unit:n,group});
     }
@@ -196,7 +201,12 @@ function bag(n,depth=0,b=new Map()){
   return b;
 }
 function jaccard(a,b){let i=0,u=0;const keys=new Set([...a.keys(),...b.keys()]);for(const k of keys){const x=a.get(k)||0,y=b.get(k)||0;i+=Math.min(x,y);u+=Math.max(x,y);}return u?i/u:0;}
-const dim=n=>{if(!isRef(n))return n;const b=T[n.t]?.body||{},e=envOf(n);return {...b,width:bind(b.width,e),height:bind(b.height,e)};};
+// 自身没有宽高（内容撑开）的屏幕级节点，设计稿尺寸记在 canvasXY 里
+const dim=n=>{
+  const c=n?.canvasXY||{};
+  if(!isRef(n))return {...n,width:n.width??c.width,height:n.height??c.height};
+  const b=T[n.t]?.body||{},e=envOf(n);return {...b,width:bind(b.width,e)??c.width,height:bind(b.height,e)??c.height};
+};
 const wh=d=>(typeof d.width==='number'?d.width:'?')+'x'+(typeof d.height==='number'?d.height:'?');
 function texts(n,acc=[],env={}){
   if(!n)return acc;
@@ -399,7 +409,8 @@ function outline(){
 // ---------- tokens ----------
 function tokens(){
   // 数值都是设计稿像素：按屏宽提示倍率，免得把 2x 的值直接写进 CSS
-  const widths=units().filter(e=>e.unit&&!isRef(e.unit)&&e.unit.tag!=='TEXT').map(e=>dim(e.unit).width).filter(w=>typeof w==='number'&&w>=320&&w<=1300);
+  const SCREEN_TAGS=new Set(['FRAME','GROUP','SECTION','COMPONENT','INSTANCE','COMPONENT_SET']);
+  const widths=units().filter(e=>e.unit&&(isRef(e.unit)?SCREEN_TAGS.has(T[e.unit.t]?.body?.tag):SCREEN_TAGS.has(e.unit.tag))).map(e=>dim(e.unit).width).filter(w=>typeof w==='number'&&w>=320&&w<=1300);
   const mode=[...widths.reduce((m,w)=>m.set(w,(m.get(w)||0)+1),new Map())].sort((a,b)=>b[1]-a[1])[0]?.[0];
   if(mode){const scale=mode>=1100?3:mode>=700?2:1;
     console.log(scale>1?`note: 屏宽多为 ${mode}，是 ${scale}x 稿：下面的数值都要 ÷${scale} 再写成 CSS（同一文件里 375/390/414 宽的帧是 1x，单独判断）`:`note: 屏宽多为 ${mode}，1x 稿，数值直接用`);}
