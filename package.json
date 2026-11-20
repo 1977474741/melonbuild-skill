@@ -1,6 +1,6 @@
 {
   "name": "melonbuild-skill",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MelonBuild skill：让 AI 编程工具把 Figma 设计稿做成可直接合进项目的生产级代码",
   "type": "module",
   "bin": {
@@ -17,7 +17,13 @@
   "engines": {
     "node": ">=22.15.0"
   },
-  "keywords": ["figma", "design-to-code", "claude-code", "skill", "melonbuild"],
+  "keywords": [
+    "figma",
+    "design-to-code",
+    "claude-code",
+    "skill",
+    "melonbuild"
+  ],
   "homepage": "https://www.melonbuild.com",
   "repository": {
     "type": "git",
