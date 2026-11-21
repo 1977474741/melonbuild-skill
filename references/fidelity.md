@@ -9,7 +9,7 @@
 | `mode` row / column / grid / none | `display:flex` + direction / `display:grid` / 无 flex，子节点全部 absolute |
 | `justifyContent` `alignItems` `alignSelf` `wrap` `padding` | 直译。flex 容器的 `alignItems` 总会给出；没给就不写，因为 CSS 默认的 stretch 不等于 Figma 的默认值 |
 | `gap` | 直译；**负值**改成后续子项的负 margin（`> * + * { margin-left:-4px }`） |
-| `sizing` `"水平/垂直"` | `fixed` 用节点的 width/height；`hug` 用 fit-content；`fill` 不写尺寸，由 `flexGrow`、`flexBasis`、`alignSelf` 承载 |
+| `sizing` `"水平/垂直"` | `fixed` 用节点的 width/height；`hug` 用 fit-content；`fill` 由 `flexGrow`、`flexBasis`、`alignSelf` 承载，节点上给了 width/height 时照写（父级是 `hug` 时由它定实际尺寸，否则会被内容撑开） |
 | `flexGrow` / `noShrink` / `flexBasis` / `minWidth` | `flex-grow:1` / `flex-shrink:0` / `flex-basis:0` / `min-width`，各写各的，**不要合并成 flex 简写**；没有 noShrink 就不写 shrink |
 | `position` | `relative` 只表示它是定位上下文，节点本身仍在 flex 流里；只有 `absolute` 或父节点 `mode:none` 时才脱离文档流 |
 | `locationRelativeToParent` / `inset` | `position:absolute; left; top` / `inset:0`，坐标相对父节点外边缘 |
